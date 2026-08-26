@@ -1,0 +1,10 @@
+duckdb>=1.1
+h3>=4.1
+pyyaml>=6.0
+requests>=2.32
+shapely>=2.0
+pandas>=2.0
+pyarrow>=17.0
+openpyxl>=3.1
+scipy>=1.13
+pyproj>=3.6

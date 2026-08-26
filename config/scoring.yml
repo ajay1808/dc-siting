@@ -1,0 +1,205 @@
+# =============================================================================
+# SITING SUITABILITY SCORING MODEL
+# =============================================================================
+# Score is computed per H3 cell (res 7, ~5.16 km2) and is fully explainable:
+# every cell carries its total score AND each factor subscore, so the map can
+# always answer "why is this cell an 82?".
+#
+#   total = 100 * (sum(weight_i * subscore_i) / sum(weight_i)) * exclusion_mult
+#
+# All subscores are normalized 0..1. Weights need not sum to 1 (renormalized).
+# Cells with no data for a factor drop that factor and renormalize, rather
+# than scoring it zero -- absence of data is not evidence of unsuitability.
+# =============================================================================
+
+version: 1
+grid:
+  system: h3
+  resolution: 7
+
+# --- how a missing factor is handled -----------------------------------------
+missing_data:
+  policy: renormalize        # renormalize | zero | neutral
+  min_factors_required: 6    # below this, cell scored null (shown grey)
+
+# --- exclusions: applied AFTER weighting, as a multiplier --------------------
+exclusions:
+  protected_lands:
+    mode: hard
+    multiplier: 0.0
+    reason: Federal protected land / designated critical habitat
+  flood_zones:
+    mode: soft
+    multiplier: 0.25
+    reason: FEMA 100-year floodplain
+  open_water:
+    mode: hard
+    multiplier: 0.0
+    reason: NLCD open water / wetland
+
+# --- flags: surfaced in the UI, never folded into the score ------------------
+flags:
+  - id: tribal_jurisdiction
+    source: tribal_lands
+    label: Tribal land - sovereignty & consultation required
+  - id: ej_screening
+    source: county_demographics
+    field: pct_poverty
+    threshold: 20
+    label: Elevated poverty rate - environmental justice review indicated
+  - id: high_water_stress
+    source: water_stress
+    field: bws_score
+    threshold: 4
+    label: Extremely high baseline water stress
+  - id: active_moratorium
+    source: policy_climate
+    field: moratoria_active
+    label: Active local data center moratorium reported
+
+# --- factors -----------------------------------------------------------------
+# Default profile is tuned for large-footprint AI/HPC campuses, where power
+# availability dominates and latency barely matters. See `profiles` below.
+factors:
+
+  grid_access:
+    label: Transmission & Substation Access
+    weight: 0.17
+    inputs: [transmission_lines, substations]
+    combine: max          # nearest good interconnect governs
+
+  grid_headroom:
+    label: Interconnection Headroom
+    weight: 0.14
+    inputs: [interconnection_queue]
+    note: Queue capacity nearby is the strongest available proxy for whether
+          new large load can actually be energized this decade.
+
+  power_cost:
+    label: Industrial Power Cost
+    weight: 0.10
+    inputs: [retail_power_price]
+
+  cooling_efficiency:
+    label: Cooling Climate
+    weight: 0.09
+    inputs: [cooling_climate]
+    note: Design wet-bulb sets achievable PUE and annual water draw.
+
+  network_latency:
+    label: IXP Proximity
+    weight: 0.08
+    inputs: [ixp]
+
+  water_availability:
+    label: Water Availability
+    weight: 0.08
+    inputs: [water_stress, water_treatment]
+    combine: mean
+
+  buildability:
+    label: Terrain & Land Cover
+    weight: 0.07
+    inputs: [slope, land_cover]
+    combine: product      # steep AND forested is much worse than either alone
+
+  policy_climate:
+    label: Policy & Incentive Climate
+    weight: 0.07
+    inputs: [policy_climate]
+
+  hazard:
+    label: Natural Hazard Exposure
+    weight: 0.06
+    inputs: [seismic, wildfire_risk]
+    combine: min          # worst hazard governs
+
+  market_maturity:
+    label: Existing DC Cluster
+    weight: 0.04
+    inputs: [existing_datacenters]
+
+  gas_access:
+    label: Natural Gas Access
+    weight: 0.04
+    inputs: [gas_pipelines]
+
+  clean_power_potential:
+    label: Renewable Resource
+    weight: 0.03
+    inputs: [solar_wind_potential]
+
+  network_infrastructure:
+    label: Broadband Infrastructure
+    weight: 0.02
+    inputs: [broadband_served]
+
+  logistics:
+    label: Rail & Highway Access
+    weight: 0.01
+    inputs: [rail_highway]
+
+# --- alternative weightings ---------------------------------------------------
+# Same subscores, different weights. Recomputed client-side from the baked
+# per-factor values, so switching profiles is instant and needs no re-tiling.
+profiles:
+
+  ai_training:
+    label: AI / HPC Training Campus
+    description: Power-dominant. Latency is nearly irrelevant; cooling and
+                 interconnection headroom dominate.
+    weights:
+      grid_access: 0.20
+      grid_headroom: 0.18
+      power_cost: 0.12
+      cooling_efficiency: 0.12
+      water_availability: 0.09
+      buildability: 0.07
+      policy_climate: 0.07
+      hazard: 0.05
+      gas_access: 0.04
+      clean_power_potential: 0.04
+      network_latency: 0.02
+      market_maturity: 0.00
+      network_infrastructure: 0.00
+      logistics: 0.00
+
+  edge_latency:
+    label: Edge / Latency-Sensitive
+    description: Proximity to population and exchanges dominates; raw power
+                 scale matters much less.
+    weights:
+      network_latency: 0.28
+      market_maturity: 0.16
+      network_infrastructure: 0.12
+      grid_access: 0.12
+      power_cost: 0.08
+      buildability: 0.06
+      policy_climate: 0.06
+      hazard: 0.05
+      water_availability: 0.03
+      cooling_efficiency: 0.02
+      logistics: 0.02
+      grid_headroom: 0.00
+      gas_access: 0.00
+      clean_power_potential: 0.00
+
+  sustainable:
+    label: Low-Impact / Sustainability-Weighted
+    description: Penalizes water stress and rewards renewable resource and
+                 cool climate. For siting under corporate ESG constraints.
+    weights:
+      water_availability: 0.18
+      cooling_efficiency: 0.16
+      clean_power_potential: 0.14
+      grid_access: 0.12
+      grid_headroom: 0.10
+      buildability: 0.08
+      hazard: 0.06
+      policy_climate: 0.06
+      power_cost: 0.04
+      network_latency: 0.04
+      gas_access: 0.00
+      market_maturity: 0.02
+      network_infrastructure: 0.00
+      logistics: 0.00

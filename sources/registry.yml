@@ -1,0 +1,721 @@
+# =============================================================================
+# DATA CENTER SITING — SOURCE REGISTRY
+# =============================================================================
+# Declarative manifest of every data layer. The pipeline reads ONLY this file
+# to know what to fetch, how to normalize it, and how it feeds the score.
+#
+# tier:    easy | medium | hard      (hard = modeled, deferred to V2)
+# phase:   1 | 2                     (V1 = easy + medium)
+# auth:    none | api_key | account  (see docs/ACCOUNTS.md)
+# role:    display  -> drawn on the map
+#          score    -> feeds the suitability score
+#          exclude  -> hard mask (score forced to 0 / flagged unbuildable)
+#          context  -> shown + disclosed, deliberately NOT scored
+# verify:  endpoints are checked by `pipeline/check.py` before any fetch.
+# =============================================================================
+
+meta:
+  grid:
+    system: h3
+    resolution: 7          # ~5.16 km2/cell, ~1.22 km edge, ~1.57M cells CONUS
+    drilldown_resolution: 8  # ~0.74 km2, enabled per-state on demand
+    extent: conus            # conus | conus_ak_hi
+  crs_working: EPSG:5070    # NAD83 / Conus Albers - equal area, meters
+  crs_output: EPSG:4326
+
+# =============================================================================
+# ENERGY / GRID  — the dominant siting constraint
+# =============================================================================
+layers:
+
+  - id: transmission_lines
+    name: Electric Transmission Lines
+    category: energy
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: line
+    auth: account          # HIFLD Open access has tightened; EIA is the fallback
+    license: US Federal / public domain
+    cadence: quarterly
+    endpoints:
+      - name: eia_energy_atlas
+        url: https://atlas.eia.gov/datasets/eia::electric-power-transmission-lines/about
+        format: page
+        primary: true
+      - name: hifld
+        url: https://hifld-geoplatform.opendata.arcgis.com/datasets/electric-power-transmission-lines
+        format: page
+      - name: osm_fallback
+        url: overpass
+        query: 'way["power"="line"]'
+        format: overpass
+    fields: [VOLTAGE, VOLT_CLASS, OWNER, STATUS, TYPE]
+    scoring:
+      factor: grid_access
+      direction: positive
+      method: distance_decay
+      # voltage-weighted: a 500kV line is worth far more than a 69kV line
+      weight_field: VOLTAGE
+      weight_curve: {69: 0.2, 115: 0.4, 230: 0.7, 345: 0.9, 500: 1.0, 765: 1.0}
+      decay_km: 15
+      max_km: 40
+
+  - id: substations
+    name: Electric Substations
+    category: energy
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: point
+    auth: account
+    license: US Federal / public domain
+    cadence: quarterly
+    endpoints:
+      - name: eia_energy_atlas
+        url: https://atlas.eia.gov/datasets/eia::electric-substations/about
+        format: page
+        primary: true
+      - name: hifld
+        url: https://hifld-geoplatform.opendata.arcgis.com/datasets/substations
+        format: page
+    fields: [NAME, MAX_VOLT, MIN_VOLT, TYPE, STATUS, LINES]
+    scoring:
+      factor: grid_access
+      direction: positive
+      method: distance_decay
+      weight_field: MAX_VOLT
+      weight_curve: {69: 0.2, 115: 0.5, 230: 0.8, 345: 1.0, 500: 1.0}
+      decay_km: 10
+      max_km: 30
+
+  - id: interconnection_queue
+    name: Generator Interconnection Queue
+    category: energy
+    tier: medium
+    phase: 1
+    role: [display, score]
+    geometry: point
+    auth: none
+    license: LBNL / CC BY 4.0
+    cadence: annual
+    note: >
+      THE binding constraint on US data center development right now. Queue
+      depth and wait time near a site predicts whether new load can actually
+      be energized. FPX does not have this layer.
+    endpoints:
+      - name: lbnl_queued_up
+        url: https://emp.lbl.gov/generation-storage-and-hybrid-capacity
+        format: page
+        primary: true
+    fields: [q_status, q_year, capacity_mw, fuel, state, county, poi_name]
+    scoring:
+      factor: grid_headroom
+      direction: positive
+      method: capacity_within_radius
+      value_field: capacity_mw
+      radius_km: 50
+
+  - id: balancing_authorities
+    name: Balancing Authority Territories
+    category: energy
+    tier: easy
+    phase: 1
+    role: [display, context]
+    geometry: polygon
+    auth: none
+    license: US Federal / public domain
+    cadence: annual
+    endpoints:
+      - name: eia_ba
+        url: https://atlas.eia.gov/datasets/eia::balancing-authorities/about
+        format: page
+    fields: [NAME, ABBREV, REGION]
+
+  - id: electric_territories
+    name: Electric Utility Service Territories
+    category: energy
+    tier: easy
+    phase: 1
+    role: [display, context]
+    geometry: polygon
+    auth: account
+    license: US Federal / public domain
+    cadence: annual
+    endpoints:
+      - name: hifld
+        url: https://hifld-geoplatform.opendata.arcgis.com/datasets/electric-retail-service-territories
+        format: page
+    fields: [NAME, TYPE, CNTRL_AREA, HOLDING_CO]
+
+  - id: retail_power_price
+    name: Retail Electricity Price (Industrial)
+    category: energy
+    tier: medium
+    phase: 1
+    role: [score]
+    geometry: join_utility
+    auth: api_key
+    api_key_env: EIA_API_KEY
+    license: US Federal / public domain
+    cadence: monthly
+    note: Joined to utility territory, then to grid cells. Industrial rate, c/kWh.
+    endpoints:
+      - name: eia_861
+        url: https://api.eia.gov/v2/electricity/retail-sales/data/
+        format: json_api
+        params: {frequency: monthly, "data[]": price, "facets[sectorid][]": IND}
+    scoring:
+      factor: power_cost
+      direction: negative     # lower price = better
+      method: normalize_invert
+      clamp: [4.0, 20.0]      # cents/kWh
+
+  - id: power_plants
+    name: Power Plants (All Sources)
+    category: energy
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: point
+    auth: api_key
+    api_key_env: EIA_API_KEY
+    license: US Federal / public domain
+    cadence: monthly
+    endpoints:
+      - name: eia_860m
+        url: https://www.eia.gov/electricity/data/eia860m/
+        format: xlsx
+        primary: true
+      - name: eia_atlas
+        url: https://atlas.eia.gov/datasets/eia::power-plants/about
+        format: page
+    fields: [plant_name, plant_code, capacity_mw, technology, sector, status]
+    scoring:
+      factor: generation_proximity
+      direction: positive
+      method: capacity_within_radius
+      value_field: capacity_mw
+      radius_km: 40
+
+  - id: gas_pipelines
+    name: Natural Gas Transmission Pipelines
+    category: energy
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: line
+    auth: none
+    license: US Federal / public domain
+    cadence: annual
+    note: Enables on-site generation / bridge power, increasingly common for DCs.
+    endpoints:
+      - name: eia_atlas
+        url: https://atlas.eia.gov/datasets/eia::natural-gas-interstate-and-intrastate-pipelines/about
+        format: page
+    scoring:
+      factor: gas_access
+      direction: positive
+      method: distance_decay
+      decay_km: 20
+      max_km: 50
+
+# =============================================================================
+# NETWORK / CONNECTIVITY
+# =============================================================================
+
+  - id: ixp
+    name: Internet Exchange Points
+    category: network
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: point
+    auth: account
+    api_key_env: PEERINGDB_API_KEY
+    license: PeeringDB / CC BY 4.0
+    cadence: monthly
+    note: >
+      Latency to a major IXP is a first-order siting factor and PeeringDB is a
+      clean free API. FPX has no IXP layer. High-value, low-effort addition.
+    endpoints:
+      - name: peeringdb_ix
+        url: https://www.peeringdb.com/api/ix
+        format: json_api
+      - name: peeringdb_fac
+        url: https://www.peeringdb.com/api/fac
+        format: json_api
+    fields: [name, city, state, net_count, latitude, longitude]
+    scoring:
+      factor: network_latency
+      direction: positive
+      method: distance_decay
+      weight_field: net_count      # bigger exchange = more valuable
+      decay_km: 80
+      max_km: 400
+
+  - id: broadband_served
+    name: Broadband Service Availability
+    category: network
+    tier: medium
+    phase: 1
+    role: [display, score]
+    geometry: join_county
+    auth: none
+    license: US Federal / public domain
+    cadence: semiannual
+    note: FCC BDC bulk files are very large; we aggregate to county then to cells.
+    endpoints:
+      - name: fcc_bdc
+        url: https://broadbandmap.fcc.gov/data-download
+        format: page
+    fields: [total_bsls, served_bsls, underserved_bsls]
+    scoring:
+      factor: network_infrastructure
+      direction: positive
+      method: ratio_normalize
+
+  - id: existing_datacenters
+    name: Existing Data Centers
+    category: network
+    tier: medium
+    phase: 1
+    role: [display, score]
+    geometry: point
+    auth: none
+    license: ODbL (OpenStreetMap)
+    cadence: monthly
+    note: >
+      Dual signal: clustering proves the fundamentals work (power, fiber,
+      permitting), but saturation means grid contention. Scored as a tuned
+      optimum, not monotonic.
+    endpoints:
+      - name: osm_overpass
+        url: overpass
+        query: 'nwr["telecom"="data_center"];nwr["building"="data_center"]'
+        format: overpass
+    scoring:
+      factor: market_maturity
+      direction: optimum
+      method: count_within_radius
+      radius_km: 50
+      optimum_count: 5        # some neighbours good, many = contention
+      falloff: 20
+
+# =============================================================================
+# WATER
+# =============================================================================
+
+  - id: water_stress
+    name: Baseline Water Stress (Aqueduct)
+    category: water
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: polygon
+    auth: none
+    license: WRI Aqueduct 4.0 / CC BY 4.0
+    cadence: annual
+    endpoints:
+      - name: wri_aqueduct
+        url: https://www.wri.org/data/aqueduct-global-maps-40-data
+        format: page
+    fields: [bws_score, bws_cat, bwd_score, iav_score]
+    scoring:
+      factor: water_availability
+      direction: negative
+      method: normalize_invert
+      clamp: [0, 5]
+
+  - id: drought
+    name: US Drought Monitor
+    category: water
+    tier: easy
+    phase: 1
+    role: [display, context]
+    geometry: polygon
+    auth: none
+    license: Public domain
+    cadence: weekly
+    endpoints:
+      - name: usdm
+        url: https://droughtmonitor.unl.edu/DmData/GISData.aspx
+        format: page
+
+  - id: water_use
+    name: County Water Withdrawals
+    category: water
+    tier: medium
+    phase: 1
+    role: [score]
+    geometry: join_county
+    auth: none
+    license: US Federal / public domain
+    cadence: quinquennial
+    endpoints:
+      - name: usgs_water_use
+        url: https://water.usgs.gov/watuse/data/
+        format: page
+    scoring:
+      factor: water_availability
+      direction: context
+
+  - id: water_treatment
+    name: Wastewater Treatment Facilities
+    category: water
+    tier: medium
+    phase: 1
+    role: [display, score]
+    geometry: point
+    auth: none
+    license: US Federal / public domain
+    cadence: annual
+    note: Reclaimed water is the preferred DC cooling source; proximity matters.
+    endpoints:
+      - name: epa_echo
+        url: https://echo.epa.gov/tools/data-downloads
+        format: page
+    scoring:
+      factor: water_availability
+      direction: positive
+      method: distance_decay
+      decay_km: 15
+      max_km: 40
+
+# =============================================================================
+# CLIMATE / COOLING  — drives PUE and water draw. Absent from FPX entirely.
+# =============================================================================
+
+  - id: cooling_climate
+    name: Cooling Degree Days & Wet-Bulb Temperature
+    category: climate
+    tier: medium
+    phase: 1
+    role: [display, score]
+    geometry: raster_to_cell
+    auth: none
+    license: NOAA / public domain
+    cadence: annual
+    note: >
+      Highest-leverage layer FPX is missing. Design wet-bulb determines whether
+      free cooling / evaporative cooling works, which sets both PUE and annual
+      water consumption. Cool dry climates are structurally advantaged.
+    endpoints:
+      - name: noaa_normals
+        url: https://www.ncei.noaa.gov/access/us-climate-normals/
+        format: page
+      - name: noaa_climate_grid
+        url: https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/
+        format: page
+    fields: [cdd65, design_wetbulb_04pct, mean_annual_temp]
+    scoring:
+      factor: cooling_efficiency
+      direction: negative
+      method: normalize_invert
+      value_field: design_wetbulb_04pct
+      clamp: [10, 30]          # deg C
+
+  - id: solar_wind_potential
+    name: Solar & Wind Resource Potential
+    category: climate
+    tier: medium
+    phase: 1
+    role: [display, score]
+    geometry: raster_to_cell
+    auth: api_key
+    api_key_env: NREL_API_KEY
+    license: NREL / public domain
+    cadence: static
+    endpoints:
+      - name: nrel_nsrdb
+        url: https://developer.nrel.gov/docs/solar/nsrdb/
+        format: json_api
+      - name: nrel_wind
+        url: https://developer.nrel.gov/docs/wind/wind-toolkit/
+        format: json_api
+    scoring:
+      factor: clean_power_potential
+      direction: positive
+      method: normalize
+
+# =============================================================================
+# HAZARD / EXCLUSION  — hard masks
+# =============================================================================
+
+  - id: flood_zones
+    name: FEMA Flood Hazard Zones
+    category: hazard
+    tier: medium
+    phase: 1
+    role: [display, exclude]
+    geometry: polygon
+    auth: none
+    license: US Federal / public domain
+    cadence: continuous
+    note: >
+      National NFHL is ~30GB. Pipeline fetches state-by-state and discards raw
+      after rasterizing to cells - required given local disk headroom.
+    endpoints:
+      - name: fema_nfhl
+        url: https://msc.fema.gov/portal/advanceSearch
+        format: page
+      - name: fema_nfhl_rest
+        url: https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer
+        format: arcgis_rest
+    exclusion:
+      field: FLD_ZONE
+      values: [A, AE, AH, AO, AR, A99, V, VE]
+      mode: soft            # penalize heavily rather than hard-zero
+      penalty: 0.75
+
+  - id: seismic
+    name: Seismic Hazard (PGA 2% in 50yr)
+    category: hazard
+    tier: medium
+    phase: 1
+    role: [display, score]
+    geometry: raster_to_cell
+    auth: none
+    license: USGS / public domain
+    cadence: static
+    endpoints:
+      - name: usgs_nshm
+        url: https://www.usgs.gov/programs/earthquake-hazards/seismic-hazard-maps-and-site-specific-data
+        format: page
+    scoring:
+      factor: hazard
+      direction: negative
+      method: normalize_invert
+
+  - id: wildfire_risk
+    name: Wildfire Risk
+    category: hazard
+    tier: medium
+    phase: 1
+    role: [display, score]
+    geometry: raster_to_cell
+    auth: none
+    license: USFS / public domain
+    cadence: annual
+    endpoints:
+      - name: usfs_wrc
+        url: https://wildfirerisk.org/download/
+        format: page
+    scoring:
+      factor: hazard
+      direction: negative
+      method: normalize_invert
+
+# =============================================================================
+# LAND / TERRAIN
+# =============================================================================
+
+  - id: slope
+    name: Terrain Slope
+    category: land
+    tier: medium
+    phase: 1
+    role: [score]
+    geometry: raster_to_cell
+    auth: none
+    license: USGS 3DEP / public domain
+    cadence: static
+    note: DC campuses need large flat pads. Slope >5% sharply raises sitework cost.
+    endpoints:
+      - name: usgs_3dep
+        url: https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer
+        format: arcgis_rest
+    scoring:
+      factor: buildability
+      direction: negative
+      method: normalize_invert
+      clamp: [0, 15]     # percent slope
+
+  - id: land_cover
+    name: Land Cover (NLCD)
+    category: land
+    tier: medium
+    phase: 1
+    role: [score]
+    geometry: raster_to_cell
+    auth: none
+    license: USGS MRLC / public domain
+    cadence: biennial
+    endpoints:
+      - name: mrlc_nlcd
+        url: https://www.mrlc.gov/data
+        format: page
+    scoring:
+      factor: buildability
+      direction: categorical
+      class_scores:
+        21: 0.9    # developed open space
+        22: 0.85   # developed low intensity
+        23: 0.6    # developed medium
+        24: 0.3    # developed high (no room)
+        81: 0.8    # pasture/hay
+        82: 0.75   # cropland
+        31: 0.7    # barren
+        41: 0.25   # forest
+        42: 0.25
+        43: 0.25
+        90: 0.0    # woody wetlands
+        95: 0.0    # emergent wetlands
+        11: 0.0    # open water
+
+  - id: protected_lands
+    name: Protected Lands (Parks, Critical Habitat, ACEC)
+    category: land
+    tier: easy
+    phase: 1
+    role: [display, exclude]
+    geometry: polygon
+    auth: none
+    license: US Federal / public domain
+    cadence: annual
+    endpoints:
+      - name: padus
+        url: https://www.usgs.gov/programs/gap-analysis-project/science/pad-us-data-download
+        format: page
+        primary: true
+      - name: usfws_crithab
+        url: https://ecos.fws.gov/ecp/report/table/critical-habitat.html
+        format: page
+      - name: blm_acec
+        url: https://gbp-blm-egis.hub.arcgis.com/
+        format: page
+    exclusion:
+      mode: hard
+      note: Federal protected land and designated critical habitat are unbuildable.
+
+  - id: brownfields
+    name: EPA Brownfield & Superfund Sites
+    category: land
+    tier: medium
+    phase: 1
+    role: [display, context]
+    geometry: point
+    auth: none
+    license: US Federal / public domain
+    cadence: quarterly
+    note: >
+      Ambiguous signal - contamination is a liability, but brownfield
+      redevelopment often carries large tax credits and pre-existing power
+      service. Shown as context, not scored.
+    endpoints:
+      - name: epa_cleanups
+        url: https://www.epa.gov/frs/geospatial-data-download-service
+        format: page
+
+  - id: rail_highway
+    name: Rail & Interstate Access
+    category: land
+    tier: easy
+    phase: 1
+    role: [score]
+    geometry: line
+    auth: none
+    license: BTS NTAD / public domain
+    cadence: annual
+    endpoints:
+      - name: bts_ntad
+        url: https://geodata.bts.gov/
+        format: page
+    scoring:
+      factor: logistics
+      direction: positive
+      method: distance_decay
+      decay_km: 20
+      max_km: 60
+
+# =============================================================================
+# JURISDICTION / SOCIOECONOMIC
+# =============================================================================
+
+  - id: tribal_lands
+    name: Tribal Lands (AIANNH)
+    category: jurisdiction
+    tier: easy
+    phase: 1
+    role: [display, context]
+    geometry: polygon
+    auth: none
+    license: US Census / public domain
+    cadence: annual
+    note: >
+      Modeled as a JURISDICTIONAL FLAG, not a score penalty. Development on or
+      near tribal land is a sovereignty and consultation question, not a
+      desirability question. The map surfaces it; it does not rank it.
+    endpoints:
+      - name: census_tiger_aiannh
+        url: https://www2.census.gov/geo/tiger/TIGER2024/AIANNH/
+        format: shapefile_dir
+
+  - id: county_demographics
+    name: County Demographics (ACS)
+    category: socioeconomic
+    tier: medium
+    phase: 1
+    role: [display, context]
+    geometry: join_county
+    auth: api_key
+    api_key_env: CENSUS_API_KEY
+    license: US Census / public domain
+    cadence: annual
+    note: >
+      Poverty rate is carried as a DISCLOSURE / environmental-justice screening
+      field, deliberately NOT as a positive scoring input. Treating low income
+      as a siting advantage is precisely the pattern that generates EJ
+      litigation and permit denials. Surfaced so it can be reviewed, never
+      silently rewarded.
+    endpoints:
+      - name: census_acs5
+        url: https://api.census.gov/data/2023/acs/acs5
+        format: json_api
+    fields: [pct_poverty, median_income, population, pct_unemployed]
+
+  - id: opportunity_zones
+    name: Qualified Opportunity Zones
+    category: socioeconomic
+    tier: easy
+    phase: 1
+    role: [display, context]
+    geometry: polygon
+    auth: none
+    license: US Treasury / public domain
+    cadence: static
+    endpoints:
+      - name: cdfi_oz
+        url: https://www.cdfifund.gov/opportunity-zones
+        format: page
+
+# =============================================================================
+# POLICY  — AI-assembled, see pipeline/policy_scan.py
+# =============================================================================
+
+  - id: policy_climate
+    name: State Data Center Policy & Incentive Climate
+    category: policy
+    tier: medium
+    phase: 1
+    role: [display, score]
+    geometry: join_state
+    auth: api_key
+    api_key_env: ANTHROPIC_API_KEY
+    license: derived / cite-linked
+    cadence: monthly
+    note: >
+      Structured per-state record built by an LLM research pass with mandatory
+      source URLs. Every scored field must carry >=1 citation and a confidence
+      value or it is dropped. Never scored from an uncited claim.
+    fields:
+      - sales_tax_exemption      # DC equipment sales/use tax exemption
+      - property_tax_abatement
+      - permitting_speed
+      - moratoria_active         # active local moratoria on DC development
+      - power_ratepayer_rules    # who pays for interconnection upgrades
+      - water_restrictions
+    scoring:
+      factor: policy_climate
+      direction: positive
+      method: weighted_rubric

@@ -1,0 +1,8 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "siting-map", "runtimeExecutable": "npx",
+      "runtimeArgs": ["--yes","http-server","web","-p","8099","-c-1","--cors"],
+      "port": 8099 }
+  ]
+}

@@ -1,0 +1,36 @@
+:root{
+  --bg:#0b0e13; --panel:#11151d; --line:#1e2530; --ink:#e6ebf2;
+  --muted:#8b97a8; --accent:#4da3ff;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+  font:13px/1.5 ui-monospace,"SF Mono",Menlo,monospace}
+#map{position:absolute;inset:0}
+#panel{position:absolute;top:0;left:0;bottom:0;width:310px;z-index:2;
+  background:rgba(17,21,29,.94);backdrop-filter:blur(12px);
+  border-right:1px solid var(--line);padding:18px;overflow-y:auto}
+header h1{margin:0;font-size:15px;letter-spacing:.14em;text-transform:uppercase}
+.sub{margin:4px 0 0;color:var(--muted);font-size:11px}
+section{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}
+.lbl{display:block;font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--muted);margin-bottom:8px}
+select,input[type=range]{width:100%}
+select{background:#0c1017;color:var(--ink);border:1px solid var(--line);
+  padding:8px;border-radius:4px;font:inherit}
+.desc{color:var(--muted);font-size:11px;margin:8px 0 0}
+#ramp{height:12px;border-radius:2px;border:1px solid var(--line)}
+.ramp-ticks{display:flex;justify-content:space-between;color:var(--muted);
+  font-size:10px;margin-top:4px}
+.score-big{font-size:38px;line-height:1;margin-bottom:14px}
+.score-big small{font-size:13px;color:var(--muted);margin-left:4px}
+.frow{display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:11px}
+.frow .fname{flex:0 0 108px;color:var(--muted)}
+.frow .fbar{flex:1;height:6px;background:#0c1017;border-radius:3px;overflow:hidden}
+.frow .fbar i{display:block;height:100%;background:var(--accent)}
+.frow .fval{flex:0 0 26px;text-align:right}
+.hidden{display:none}
+footer{margin-top:22px;padding-top:14px;border-top:1px solid var(--line);
+  color:var(--muted);font-size:10px}
+.warn{color:#e0b341;margin:6px 0 0;font-size:10px}
+.maplibregl-popup-content{background:#11151d;color:var(--ink);
+  border:1px solid var(--line);font:11px ui-monospace,monospace}

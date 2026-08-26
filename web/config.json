@@ -1,0 +1,174 @@
+{
+ "resolution": 7,
+ "factors": {
+  "grid_access": {
+   "label": "Transmission & Substation Access",
+   "weight": 0.17
+  },
+  "grid_headroom": {
+   "label": "Interconnection Headroom",
+   "weight": 0.14
+  },
+  "power_cost": {
+   "label": "Industrial Power Cost",
+   "weight": 0.1
+  },
+  "cooling_efficiency": {
+   "label": "Cooling Climate",
+   "weight": 0.09
+  },
+  "network_latency": {
+   "label": "IXP Proximity",
+   "weight": 0.08
+  },
+  "water_availability": {
+   "label": "Water Availability",
+   "weight": 0.08
+  },
+  "buildability": {
+   "label": "Terrain & Land Cover",
+   "weight": 0.07
+  },
+  "policy_climate": {
+   "label": "Policy & Incentive Climate",
+   "weight": 0.07
+  },
+  "hazard": {
+   "label": "Natural Hazard Exposure",
+   "weight": 0.06
+  },
+  "market_maturity": {
+   "label": "Existing DC Cluster",
+   "weight": 0.04
+  },
+  "gas_access": {
+   "label": "Natural Gas Access",
+   "weight": 0.04
+  },
+  "clean_power_potential": {
+   "label": "Renewable Resource",
+   "weight": 0.03
+  },
+  "network_infrastructure": {
+   "label": "Broadband Infrastructure",
+   "weight": 0.02
+  },
+  "logistics": {
+   "label": "Rail & Highway Access",
+   "weight": 0.01
+  }
+ },
+ "profiles": {
+  "default": {
+   "label": "Balanced (default)",
+   "description": "Registry default weighting.",
+   "weights": {
+    "grid_access": 0.17,
+    "grid_headroom": 0.14,
+    "power_cost": 0.1,
+    "cooling_efficiency": 0.09,
+    "network_latency": 0.08,
+    "water_availability": 0.08,
+    "buildability": 0.07,
+    "policy_climate": 0.07,
+    "hazard": 0.06,
+    "market_maturity": 0.04,
+    "gas_access": 0.04,
+    "clean_power_potential": 0.03,
+    "network_infrastructure": 0.02,
+    "logistics": 0.01
+   }
+  },
+  "ai_training": {
+   "label": "AI / HPC Training Campus",
+   "description": "Power-dominant. Latency is nearly irrelevant; cooling and interconnection headroom dominate.",
+   "weights": {
+    "grid_access": 0.2,
+    "grid_headroom": 0.18,
+    "power_cost": 0.12,
+    "cooling_efficiency": 0.12,
+    "water_availability": 0.09,
+    "buildability": 0.07,
+    "policy_climate": 0.07,
+    "hazard": 0.05,
+    "gas_access": 0.04,
+    "clean_power_potential": 0.04,
+    "network_latency": 0.02,
+    "market_maturity": 0.0,
+    "network_infrastructure": 0.0,
+    "logistics": 0.0
+   }
+  },
+  "edge_latency": {
+   "label": "Edge / Latency-Sensitive",
+   "description": "Proximity to population and exchanges dominates; raw power scale matters much less.",
+   "weights": {
+    "network_latency": 0.28,
+    "market_maturity": 0.16,
+    "network_infrastructure": 0.12,
+    "grid_access": 0.12,
+    "power_cost": 0.08,
+    "buildability": 0.06,
+    "policy_climate": 0.06,
+    "hazard": 0.05,
+    "water_availability": 0.03,
+    "cooling_efficiency": 0.02,
+    "logistics": 0.02,
+    "grid_headroom": 0.0,
+    "gas_access": 0.0,
+    "clean_power_potential": 0.0
+   }
+  },
+  "sustainable": {
+   "label": "Low-Impact / Sustainability-Weighted",
+   "description": "Penalizes water stress and rewards renewable resource and cool climate. For siting under corporate ESG constraints.",
+   "weights": {
+    "water_availability": 0.18,
+    "cooling_efficiency": 0.16,
+    "clean_power_potential": 0.14,
+    "grid_access": 0.12,
+    "grid_headroom": 0.1,
+    "buildability": 0.08,
+    "hazard": 0.06,
+    "policy_climate": 0.06,
+    "power_cost": 0.04,
+    "network_latency": 0.04,
+    "gas_access": 0.0,
+    "market_maturity": 0.02,
+    "network_infrastructure": 0.0,
+    "logistics": 0.0
+   }
+  }
+ },
+ "live_factors": [
+  "network_latency",
+  "market_maturity"
+ ],
+ "flags": [
+  {
+   "id": "tribal_jurisdiction",
+   "source": "tribal_lands",
+   "label": "Tribal land - sovereignty & consultation required"
+  },
+  {
+   "id": "ej_screening",
+   "source": "county_demographics",
+   "field": "pct_poverty",
+   "threshold": 20,
+   "label": "Elevated poverty rate - environmental justice review indicated"
+  },
+  {
+   "id": "high_water_stress",
+   "source": "water_stress",
+   "field": "bws_score",
+   "threshold": 4,
+   "label": "Extremely high baseline water stress"
+  },
+  {
+   "id": "active_moratorium",
+   "source": "policy_climate",
+   "field": "moratoria_active",
+   "label": "Active local data center moratorium reported"
+  }
+ ]
+}

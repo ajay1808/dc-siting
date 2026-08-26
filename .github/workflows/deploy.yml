@@ -1,0 +1,85 @@
+name: Build & Deploy Siting Map
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 1 * *'      # monthly refresh, 1st at 06:00 UTC
+  push:
+    branches: [main]
+    paths: ['web/**', 'pipeline/**', 'config/**', 'sources/**']
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12', cache: pip }
+
+      - name: Install python deps
+        run: pip install -r requirements.txt
+
+      - name: Build tippecanoe
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential libsqlite3-dev zlib1g-dev
+          git clone --depth 1 https://github.com/felt/tippecanoe /tmp/tip
+          make -C /tmp/tip -j"$(nproc)" && sudo make -C /tmp/tip install
+
+      - name: Build grid
+        run: python pipeline/grid.py
+
+      - name: Ingest sources
+        env:
+          EIA_API_KEY:        ${{ secrets.EIA_API_KEY }}
+          CENSUS_API_KEY:     ${{ secrets.CENSUS_API_KEY }}
+          NREL_API_KEY:       ${{ secrets.NREL_API_KEY }}
+          PEERINGDB_API_KEY:  ${{ secrets.PEERINGDB_API_KEY }}
+        run: python pipeline/ingest.py
+
+      - name: Score
+        run: python pipeline/score.py
+
+      - name: Tile
+        run: |
+          python pipeline/tiles.py
+          python pipeline/webconfig.py
+          mkdir -p web/tiles && cp tiles/*.pmtiles web/tiles/
+
+      - name: Check Pages size limits
+        run: |
+          # GitHub Pages: 100 MB per file, 1 GB per site. Fail loudly rather
+          # than deploying something that will 404 at runtime.
+          fail=0
+          for f in web/tiles/*.pmtiles; do
+            mb=$(( $(stat -c%s "$f") / 1000000 ))
+            echo "$f = ${mb} MB"
+            [ "$mb" -ge 100 ] && { echo "::error::$f exceeds the 100 MB limit"; fail=1; }
+          done
+          total=$(du -sm web | cut -f1)
+          echo "site total = ${total} MB"
+          [ "$total" -ge 1000 ] && { echo "::error::site exceeds 1 GB"; fail=1; }
+          exit $fail
+
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: web }
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

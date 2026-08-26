@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DC Siting Command</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<link rel="stylesheet" href="./src/app.css">
+</head>
+<body>
+<div id="map"></div>
+
+<aside id="panel">
+  <header>
+    <h1>Siting Command</h1>
+    <p class="sub">Data center suitability · H3 r7 · CONUS</p>
+  </header>
+
+  <section>
+    <label class="lbl">Weighting profile</label>
+    <select id="profile"></select>
+    <p id="profile-desc" class="desc"></p>
+  </section>
+
+  <section>
+    <label class="lbl">Score</label>
+    <div id="ramp"></div>
+    <div class="ramp-ticks"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
+  </section>
+
+  <section>
+    <label class="lbl">Minimum score <b id="minval">0</b></label>
+    <input type="range" id="minscore" min="0" max="100" value="0">
+  </section>
+
+  <section id="readout" class="hidden">
+    <label class="lbl">Selected cell</label>
+    <div class="score-big"><span id="cell-score">–</span><small>/100</small></div>
+    <div id="cell-factors"></div>
+  </section>
+
+  <footer>
+    <div id="status">loading tiles…</div>
+    <p class="warn" id="provisional"></p>
+  </footer>
+</aside>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/pmtiles@4.5.0/dist/pmtiles.js"></script>
+<script type="module" src="./src/app.js"></script>
+</body>
+</html>
