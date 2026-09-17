@@ -102,7 +102,7 @@ layers:
     note: >
       THE binding constraint on US data center development right now. Queue
       depth and wait time near a site predicts whether new load can actually
-      be energized. FPX does not have this layer.
+      be energized. The commercial equivalent does not have this layer.
     endpoints:
       - name: lbnl_queued_up
         url: https://emp.lbl.gov/generation-storage-and-hybrid-capacity
@@ -237,7 +237,7 @@ layers:
     cadence: monthly
     note: >
       Latency to a major IXP is a first-order siting factor and PeeringDB is a
-      clean free API. FPX has no IXP layer. High-value, low-effort addition.
+      clean free API. The commercial equivalent has no IXP layer. High-value, low-effort addition.
     endpoints:
       - name: peeringdb_ix
         url: https://www.peeringdb.com/api/ix
@@ -383,7 +383,7 @@ layers:
       max_km: 40
 
 # =============================================================================
-# CLIMATE / COOLING  — drives PUE and water draw. Absent from FPX entirely.
+# CLIMATE / COOLING  — drives PUE and water draw. Absent from the commercial equivalent entirely.
 # =============================================================================
 
   - id: cooling_climate
@@ -397,7 +397,7 @@ layers:
     license: NOAA / public domain
     cadence: annual
     note: >
-      Highest-leverage layer FPX is missing. Design wet-bulb determines whether
+      Highest-leverage layer the commercial equivalent is missing. Design wet-bulb determines whether
       free cooling / evaporative cooling works, which sets both PUE and annual
       water consumption. Cool dry climates are structurally advantaged.
     endpoints:

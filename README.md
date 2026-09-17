@@ -35,7 +35,7 @@ pipeline/tiles.py      3-tier multi-resolution PMTiles
 web/                   MapLibre GL + PMTiles, fully static
 ```
 
-**Why this beats the reference product.** FPX's Buildout Command renders
+**Why this beats the reference product.** A commercial equivalent renders
 GeoJSON as SVG via react-simple-maps, shipping 9–11 MB per layer into the
 DOM and requiring a Supabase backend. This uses vector tiles over HTTP range
 requests: no server, no database, and per-factor subscores are baked into the

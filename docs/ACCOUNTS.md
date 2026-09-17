@@ -55,7 +55,7 @@ this layer carries only 0.03 weight so it is safe to defer.
 ---
 
 ## 4. PeeringDB  *(recommended, 5 min)*
-Unlocks: internet exchange points — the highest-value layer FPX lacks.
+Unlocks: internet exchange points — the highest-value layer the commercial equivalent lacks.
 
 1. Register at <https://www.peeringdb.com/register>
    - Personal/affiliate registration is fine; you do **not** need to affiliate
