@@ -79,6 +79,79 @@ def count_optimum(cells_xy, feat_xy, radius_km, optimum, falloff):
 
 # --- factor computation -----------------------------------------------------
 
+def idw(cells_xy, feat_xy, values, k=6, power=2.0):
+    """Inverse-distance-weighted interpolation from scattered stations.
+
+    Climate normals are point observations, not a surface, so every cell gets
+    a distance-weighted blend of its k nearest stations rather than the single
+    nearest value (which produces visible Voronoi facets on the map).
+    """
+    if len(feat_xy) == 0:
+        return np.full(len(cells_xy), np.nan)
+    k = min(k, len(feat_xy))
+    tree = cKDTree(feat_xy)
+    dist, idx = tree.query(cells_xy, k=k)
+    if k == 1:
+        dist, idx = dist[:, None], idx[:, None]
+    dist = np.maximum(dist, 1.0)              # avoid divide-by-zero at a station
+    w = 1.0 / dist ** power
+    return (values[idx] * w).sum(axis=1) / w.sum(axis=1)
+
+
+def _cell_points(grid):
+    """Shapely points for every cell centroid, built once and reused."""
+    from shapely.geometry import Point as _Point
+    if not hasattr(_cell_points, "_cache"):
+        _cell_points._cache = [_Point(x, y)
+                               for x, y in zip(grid["lng"], grid["lat"])]
+    return _cell_points._cache
+
+
+def polygon_join(df, grid, value_field=None):
+    """Assign each cell the containing polygon's value, or a boolean mask.
+
+    With value_field: returns float array (NaN where no polygon contains it).
+    Without:          returns bool array, True where any polygon contains it.
+    """
+    from shapely import wkt as _wkt
+    from shapely.strtree import STRtree
+
+    sub = df if value_field is None else df[df[value_field].notna()]
+    if sub.empty:
+        return None
+    geoms, vals = [], []
+    for i, w in enumerate(sub["wkt"]):
+        try:
+            g = _wkt.loads(w).buffer(0)
+        except Exception:
+            continue
+        if g.is_empty:
+            continue
+        geoms.append(g)
+        if value_field is not None:
+            vals.append(float(sub[value_field].iloc[i]))
+    if not geoms:
+        return None
+
+    tree = STRtree(geoms)
+    pts = _cell_points(grid)
+    ci, gi = tree.query(pts, predicate="within")
+
+    if value_field is None:
+        mask = np.zeros(len(pts), dtype=bool)
+        mask[ci] = True
+        return mask
+
+    out = np.full(len(pts), np.nan)
+    varr = np.asarray(vals)
+    seen = np.zeros(len(pts), dtype=bool)
+    for i, j in zip(ci, gi):
+        if not seen[i]:
+            out[i] = varr[j]
+            seen[i] = True
+    return out
+
+
 def _normalize(vals, clamp, invert):
     """Scale to 0..1 across an explicit clamp range.
 
@@ -125,6 +198,18 @@ def compute_layer_subscore(layer, cells_xy, grid):
             return np.clip(vals, 0, 1)
         return _normalize(vals, spec.get("clamp"), method == "normalize_invert")
 
+    # --- polygon layers: value of the containing polygon ---------------------
+    if "wkt" in df.columns:
+        vf = spec.get("value_field")
+        if not vf or vf not in df.columns:
+            return None
+        out = polygon_join(df, grid, value_field=vf)
+        if out is None:
+            return None
+        print(f"      (polygon join covered {np.isfinite(out).mean():.1%} of cells)")
+        method = spec.get("method", "normalize")
+        return _normalize(out, spec.get("clamp"), method == "normalize_invert")
+
     if not {"lat", "lng"}.issubset(df.columns):
         return None
 
@@ -134,9 +219,18 @@ def compute_layer_subscore(layer, cells_xy, grid):
     if method == "distance_decay":
         wf = spec.get("weight_field")
         if wf and wf in df.columns:
-            raw = pd.to_numeric(df[wf], errors="coerce").fillna(0).to_numpy()
-            hi = np.percentile(raw[raw > 0], 95) if (raw > 0).any() else 1.0
-            w = np.clip(raw / hi, 0.05, 1.0) if hi > 0 else np.ones(len(df))
+            raw = pd.to_numeric(df[wf], errors="coerce").to_numpy(dtype=float)
+            known = np.isfinite(raw) & (raw > 0)
+            if known.any():
+                hi = np.percentile(raw[known], 95)
+                w = np.where(known, np.clip(raw / hi, 0.05, 1.0), np.nan)
+            else:
+                w = np.full(len(df), np.nan)
+            # A feature with no voltage tag is still a real asset. Flooring it
+            # at the minimum weight would make an untagged substation read as
+            # nearly worthless; score it at the median of what we do know.
+            neutral = np.nanmedian(w) if known.any() else 0.5
+            w = np.where(np.isfinite(w), w, neutral)
         else:
             w = np.ones(len(df))
         return distance_decay(cells_xy, feat_xy, w,
@@ -147,6 +241,17 @@ def compute_layer_subscore(layer, cells_xy, grid):
         vals = (pd.to_numeric(df[vf], errors="coerce").fillna(0).to_numpy()
                 if vf and vf in df.columns else np.ones(len(df)))
         return sum_within_radius(cells_xy, feat_xy, vals, spec.get("radius_km", 50))
+
+    if method in ("idw", "idw_invert"):
+        vf = spec.get("value_field")
+        if not vf or vf not in df.columns:
+            return None
+        vals = pd.to_numeric(df[vf], errors="coerce").to_numpy(dtype=float)
+        ok = np.isfinite(vals)
+        if not ok.any():
+            return None
+        interp = idw(cells_xy, feat_xy[ok], vals[ok], k=spec.get("k", 6))
+        return _normalize(interp, spec.get("clamp"), method == "idw_invert")
 
     if method == "count_within_radius":
         return count_optimum(cells_xy, feat_xy, spec.get("radius_km", 50),
@@ -200,6 +305,50 @@ def main() -> int:
     total = np.where(wsum > 0,
                      np.nansum(np.where(present, stack * wvec, 0), axis=0)
                      / np.where(wsum > 0, wsum, 1), np.nan)
+
+    # --- exclusions: multiply the weighted score ----------------------------
+    excl_cfg = cfg.get("exclusions", {}) or {}
+    by_id = {l["id"]: l for l in reg["layers"]}
+    mult = np.ones(len(grid))
+    for lid, rule in excl_cfg.items():
+        layer = by_id.get(lid)
+        src = INTERIM / f"{lid}.parquet"
+        if layer is None or not src.exists():
+            continue
+        edf = pd.read_parquet(src)
+        if "wkt" not in edf.columns:
+            continue
+        mask = polygon_join(edf, grid)
+        if mask is None:
+            continue
+        m = float(rule.get("multiplier", 0.0))
+        mult = np.where(mask, np.minimum(mult, m), mult)
+        grid[f"x_{lid}"] = mask
+        print(f"  [exclude] {lid:<22} {mask.sum():>9,} cells "
+              f"({mask.mean():5.1%})  multiplier={m}")
+    total = total * mult
+
+    # --- flags: surfaced, never folded into the score -----------------------
+    for flag in cfg.get("flags", []):
+        lid = flag.get("source")
+        src = INTERIM / f"{lid}.parquet"
+        if not src.exists():
+            continue
+        fdf = pd.read_parquet(src)
+        if "wkt" in fdf.columns:
+            fm = polygon_join(fdf, grid)
+        elif "join_key" in fdf.columns and flag.get("field"):
+            col = ("county_fips" if by_id.get(lid, {}).get("geometry") == "join_county"
+                   else "state_fips")
+            lut = fdf.dropna(subset=["join_key"]).set_index("join_key")[flag["field"]]
+            vals = grid[col].map(lut).to_numpy(dtype=float)
+            fm = np.isfinite(vals) & (vals >= float(flag.get("threshold", 0)))
+        else:
+            continue
+        if fm is None:
+            continue
+        grid[f"flag_{flag['id']}"] = fm
+        print(f"  [flag]    {flag['id']:<22} {fm.sum():>9,} cells ({fm.mean():5.1%})")
 
     grid["score"] = np.round(total * 100, 1)
     grid["factors_used"] = present.sum(axis=0)

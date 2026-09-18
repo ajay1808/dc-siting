@@ -328,6 +328,7 @@ layers:
       factor: water_availability
       direction: negative
       method: normalize_invert
+      value_field: bws_score
       clamp: [0, 5]
 
   - id: drought
@@ -410,13 +411,18 @@ layers:
       - name: noaa_climate_grid
         url: https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/
         format: page
-    fields: [cdd65, design_wetbulb_04pct, mean_annual_temp]
+    fields: [cdd65, tavg]
     scoring:
       factor: cooling_efficiency
       direction: negative
-      method: normalize_invert
-      value_field: design_wetbulb_04pct
-      clamp: [10, 30]          # deg C
+      method: idw_invert       # station point data, interpolated to cells
+      value_field: cdd65
+      clamp: [200, 4000]       # annual cooling degree days, base 65F
+      k: 6
+    substitution: >
+      Design wet-bulb (ASHRAE) is paywalled; annual CDD is the free proxy.
+      Tracks cooling energy well but ignores humidity, so arid and humid
+      sites with equal CDD score the same when they should not.
 
   - id: solar_wind_potential
     name: Solar & Wind Resource Potential

@@ -9,6 +9,7 @@ of truth about what exists; this module only says *how* to get it.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -63,7 +64,8 @@ def _get_json(url: str, params: dict | None = None, tries: int = 3) -> dict:
 
 
 def _arcgis_paged(base: str, out_fields: str = "*", where: str = "1=1",
-                  page: int = 2000, geometry: bool = True):
+                  page: int = 2000, geometry: bool = True,
+                  bbox: tuple | None = None):
     """Page an ArcGIS FeatureServer layer, yielding GeoJSON features.
 
     ArcGIS caps a single response at maxRecordCount (2000 here), so anything
@@ -74,6 +76,12 @@ def _arcgis_paged(base: str, out_fields: str = "*", where: str = "1=1",
         q = {"where": where, "outFields": out_fields, "f": "geojson",
              "resultOffset": offset, "resultRecordCount": page,
              "returnGeometry": str(geometry).lower(), "outSR": "4326"}
+        if bbox:
+            # Server-side clip. Aqueduct is global; pulling all 17k basins to
+            # throw most away is rude to the host and slow for us.
+            q.update({"geometry": ",".join(str(v) for v in bbox),
+                      "geometryType": "esriGeometryEnvelope",
+                      "spatialRel": "esriSpatialRelIntersects", "inSR": "4326"})
         url = f"{base}/query?{urllib.parse.urlencode(q)}"
         req = urllib.request.Request(url, headers={"User-Agent": UA})
         with urllib.request.urlopen(req, timeout=180) as r:
@@ -89,12 +97,14 @@ def _arcgis_paged(base: str, out_fields: str = "*", where: str = "1=1",
         time.sleep(0.3)
 
 
-def _line_vertices(geom: dict, every: int = 1):
-    """Flatten a (Multi)LineString into vertices.
+def _line_vertices(geom: dict, every: int = 1, densify_km: float | None = None):
+    """Flatten a (Multi)LineString into points.
 
     score.py measures distance to point features, so lines are represented by
-    their vertices. Transmission vertex spacing is already fine enough that a
-    nearest-vertex distance is a good proxy for nearest-line distance.
+    sampled points. Raw vertices are fine where the source geometry is already
+    detailed (HIFLD transmission averages ~36 vertices per line), but EIA's
+    pipeline geometry averages ~3, so a nearest-vertex distance there would be
+    wildly wrong. Pass densify_km to interpolate along each segment.
     """
     if not geom:
         return []
@@ -105,9 +115,26 @@ def _line_vertices(geom: dict, every: int = 1):
         parts = geom["coordinates"]
     else:
         return []
+
     out = []
     for part in parts:
-        out.extend(part[::every] if every > 1 else part)
+        pts = part[::every] if every > 1 else part
+        if not densify_km:
+            out.extend(pts)
+            continue
+        for i in range(len(pts) - 1):
+            (x1, y1), (x2, y2) = pts[i][:2], pts[i + 1][:2]
+            # Local equirectangular approximation is plenty for spacing a
+            # sample; we are choosing point density, not measuring distance.
+            midlat = math.radians((y1 + y2) / 2.0)
+            dx = (x2 - x1) * 111.320 * math.cos(midlat)
+            dy = (y2 - y1) * 110.574
+            seg = math.hypot(dx, dy)
+            n = max(1, int(seg // densify_km))
+            for k in range(n):
+                f = k / n
+                out.append([x1 + (x2 - x1) * f, y1 + (y2 - y1) * f])
+        out.append(pts[-1][:2])
     return out
 
 
@@ -145,181 +172,219 @@ def fetch_transmission_lines() -> pd.DataFrame:
 
 @fetcher("substations")
 def fetch_substations() -> pd.DataFrame:
-    """Substations from OpenStreetMap.
+    """Substations from OpenStreetMap, fetched in latitude bands.
 
     HIFLD's national substation layer is no longer public (the one copy still
     reachable holds 128 features, not ~80k), so this uses the OSM fallback the
-    registry always listed. US coverage of power=substation with voltage tags
-    is now good.
+    registry always listed.
+
+    Each band is cached to its own parquet. Overpass rate-limits national
+    queries hard and will 429 mid-run; without per-band caching a single
+    failed band means refetching everything and getting throttled again.
     """
-    rows = []
-    for lo, hi in [(24, 33), (33, 38), (38, 43), (43, 50)]:
-        query = (f"[out:json][timeout:600];"
-                 f"nwr[\"power\"=\"substation\"]({lo},-125,{hi},-66);out center tags;")
-        body = urllib.parse.urlencode({"data": query}).encode()
-        for ep in ("https://overpass-api.de/api/interpreter",
-                   "https://overpass.kumi.systems/api/interpreter"):
-            try:
-                req = urllib.request.Request(ep, data=body, headers={"User-Agent": UA})
-                with urllib.request.urlopen(req, timeout=600) as r:
-                    els = json.load(r).get("elements", [])
-                print(f"    osm substations lat {lo}-{hi}: {len(els)}")
-                for el in els:
-                    lat = el.get("lat") or (el.get("center") or {}).get("lat")
-                    lng = el.get("lon") or (el.get("center") or {}).get("lon")
-                    if lat is None or lng is None:
-                        continue
-                    t = el.get("tags", {})
-                    volts = [float(x) for x in re.findall(r"\\d+", str(t.get("voltage", "")))]
-                    kv = max(volts) / 1000.0 if volts else None
-                    rows.append({"lat": lat, "lng": lng, "MAX_VOLT": kv,
-                                 "name": t.get("name"), "operator": t.get("operator")})
-                break
-            except Exception as e:  # noqa: BLE001
-                print(f"    overpass {ep} failed: {type(e).__name__}")
-        time.sleep(3)
-    return pd.DataFrame(rows)
-
-
-
-EIA860M_URL = ("https://www.eia.gov/electricity/data/eia860m/xls/"
-               "july_generator2026.xlsx")
-
-
-def _eia860m_sheet(sheet: str) -> pd.DataFrame:
-    """Download EIA-860M once and return one sheet, cached on disk.
-
-    The EIA v2 JSON API carries generator capacity but no coordinates, so the
-    860M spreadsheet is the only free source that gives capacity AND lat/lng
-    together. Note EIA publishes a stub file for the newest month or two
-    before the real release lands; check file size if bumping the URL.
-    """
+    BANDS = [(24, 33), (33, 38), (38, 43), (43, 50)]
     RAW.mkdir(parents=True, exist_ok=True)
-    cache = RAW / "eia860m.xlsx"
-    if not cache.exists() or cache.stat().st_size < 1_000_000:
-        print(f"    downloading {EIA860M_URL}")
-        req = urllib.request.Request(EIA860M_URL, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=300) as r:
-            cache.write_bytes(r.read())
-    df = pd.read_excel(cache, sheet_name=sheet, skiprows=2, engine="openpyxl")
-    df = df.rename(columns={"Latitude": "lat", "Longitude": "lng"})
-    df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
-    df["lng"] = pd.to_numeric(df["lng"], errors="coerce")
-    df = df.dropna(subset=["lat", "lng"])
-    return df[df.lat.between(24, 50) & df.lng.between(-125, -66)].reset_index(drop=True)
+    frames, missing = [], []
+
+    for lo, hi in BANDS:
+        cache = RAW / f"osm_substations_{lo}_{hi}.parquet"
+        if cache.exists():
+            frames.append(pd.read_parquet(cache))
+            print(f"    band {lo}-{hi}: cached ({len(frames[-1]):,})")
+            continue
+        query = (f'[out:json][timeout:600];'
+                 f'nwr["power"="substation"]({lo},-125,{hi},-66);out center tags;')
+        body = urllib.parse.urlencode({"data": query}).encode()
+        got = None
+        for attempt in range(3):
+            for ep in ("https://overpass-api.de/api/interpreter",
+                       "https://overpass.kumi.systems/api/interpreter"):
+                try:
+                    req = urllib.request.Request(ep, data=body, headers={"User-Agent": UA})
+                    with urllib.request.urlopen(req, timeout=900) as r:
+                        got = json.load(r).get("elements", [])
+                    break
+                except Exception as e:  # noqa: BLE001
+                    print(f"    band {lo}-{hi} {ep.split('//')[1][:22]} "
+                          f"attempt {attempt+1}: {type(e).__name__}")
+            if got is not None:
+                break
+            # Overpass throttling clears on the order of minutes, not seconds.
+            wait = 90 * (attempt + 1)
+            print(f"    band {lo}-{hi}: backing off {wait}s")
+            time.sleep(wait)
+
+        if got is None:
+            missing.append((lo, hi))
+            continue
+
+        rows = []
+        for el in got:
+            lat = el.get("lat") or (el.get("center") or {}).get("lat")
+            lng = el.get("lon") or (el.get("center") or {}).get("lon")
+            if lat is None or lng is None:
+                continue
+            t = el.get("tags", {})
+            volts = [float(x) for x in re.findall(r"\d+", str(t.get("voltage", "")))]
+            kv = max(volts) / 1000.0 if volts else None
+            rows.append({"lat": lat, "lng": lng, "MAX_VOLT": kv,
+                         "name": t.get("name"), "operator": t.get("operator")})
+        band = pd.DataFrame(rows)
+        band.to_parquet(cache, index=False, compression="zstd")
+        print(f"    band {lo}-{hi}: fetched {len(band):,}")
+        frames.append(band)
+        time.sleep(5)
+
+    if missing:
+        print(f"    !! bands still missing: {missing} - rerun to fill them in")
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-@fetcher("power_plants")
-def fetch_power_plants() -> pd.DataFrame:
-    df = _eia860m_sheet("Operating")
-    cap = pd.to_numeric(df.get("Nameplate Capacity (MW)"), errors="coerce").fillna(0)
-    out = pd.DataFrame({
-        "lat": df["lat"], "lng": df["lng"], "capacity_mw": cap,
-        "plant_name": df.get("Plant Name"), "plant_id": df.get("Plant ID"),
-        "technology": df.get("Technology"), "state": df.get("Plant State"),
-        "ba": df.get("Balancing Authority Code"),
-    })
-    # 860M is generator-level; collapse to plants so capacity is not double counted
-    # by the radius sum and a 12-unit site is not 12 nearest neighbours.
-    agg = out.groupby("plant_id", as_index=False).agg(
-        lat=("lat", "first"), lng=("lng", "first"),
-        capacity_mw=("capacity_mw", "sum"), plant_name=("plant_name", "first"),
-        technology=("technology", "first"), state=("state", "first"), ba=("ba", "first"))
-    return agg
+
+CONUS_BBOX = (-125.0, 24.0, -66.0, 50.0)
 
 
-@fetcher("interconnection_queue")
-def fetch_interconnection_queue() -> pd.DataFrame:
-    """Planned generator additions from EIA-860M.
+@fetcher("water_stress")
+def fetch_water_stress() -> pd.DataFrame:
+    """WRI Aqueduct 4.0 baseline water stress, by hydrological basin.
 
-    The registry's primary source (LBNL 'Queued Up') returns 403 to scripted
-    clients. EIA-860M's Planned sheet is the closest free substitute: it is
-    generation that has cleared enough process to have a location and an
-    in-service date, so it indexes where new capacity is actually arriving.
-    It is NOT the full interconnection queue and will understate contention.
+    Uses WRI's own 261 MB download rather than an ArcGIS-hosted copy. The
+    hosted services are partial: the best one returned 1,405 CONUS basins and
+    left the whole northern tier (ND, MN, MT, NH, ME) with no value at all.
+    The authoritative file has 68,506 basins globally, 4,267 over CONUS.
+
+    Requires GDAL (ogr2ogr) to read the File Geodatabase.
+
+    bws_score is 0-5, higher = more stressed.
     """
-    df = _eia860m_sheet("Planned")
-    cap = pd.to_numeric(df.get("Nameplate Capacity (MW)"), errors="coerce").fillna(0)
-    out = pd.DataFrame({
-        "lat": df["lat"], "lng": df["lng"], "capacity_mw": cap,
-        "plant_name": df.get("Plant Name"), "plant_id": df.get("Plant ID"),
-        "technology": df.get("Technology"), "state": df.get("Plant State"),
-        "q_year": pd.to_numeric(df.get("Operating Year"), errors="coerce"),
-    })
-    return out.groupby("plant_id", as_index=False).agg(
-        lat=("lat", "first"), lng=("lng", "first"),
-        capacity_mw=("capacity_mw", "sum"), plant_name=("plant_name", "first"),
-        technology=("technology", "first"), state=("state", "first"),
-        q_year=("q_year", "min"))
+    import subprocess
+    import zipfile
 
+    RAW.mkdir(parents=True, exist_ok=True)
+    zpath = RAW / "aqueduct40.zip"
+    if not zpath.exists() or zpath.stat().st_size < 200_000_000:
+        print("    downloading Aqueduct 4.0 (261 MB)")
+        req = urllib.request.Request(
+            "https://files.wri.org/aqueduct/aqueduct-4-0-water-risk-data.zip",
+            headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=1800) as r, open(zpath, "wb") as f:
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
 
+    exdir = RAW / "aqueduct40"
+    if not exdir.exists():
+        with zipfile.ZipFile(zpath) as zf:
+            zf.extractall(exdir)
 
-@fetcher("retail_power_price")
-def fetch_retail_power_price() -> pd.DataFrame:
-    """Industrial retail electricity price by state, latest annual (cents/kWh).
+    gdb = next((p for p in exdir.rglob("*.gdb") if p.is_dir()), None)
+    if gdb is None:
+        raise RuntimeError("no .gdb found in Aqueduct archive")
 
-    EIA-861 resolves to utility, but utility service territory polygons are
-    part of the restricted HIFLD set, so V1 joins at state level. That is
-    coarse -- intrastate spread is real -- but it is honest and it is free.
-    """
-    key = _env("EIA_API_KEY")
-    if not key:
-        raise RuntimeError("EIA_API_KEY not set")
-    d = _get_json("https://api.eia.gov/v2/electricity/retail-sales/data/", {
-        "api_key": key, "frequency": "annual", "data[]": "price",
-        "facets[sectorid][]": "IND", "sort[0][column]": "period",
-        "sort[0][direction]": "desc", "length": "5000"})
-    rows = d["response"]["data"]
+    out = INTERIM / "aqueduct_conus.geojsonl"
+    if not out.exists():
+        subprocess.run([
+            "ogr2ogr", "-f", "GeoJSONSeq", str(out), str(gdb), "baseline_annual",
+            "-clipdst", "-125", "24", "-66", "50",
+            "-select", "bws_score,bws_cat,bws_label,pfaf_id",
+            "-nlt", "PROMOTE_TO_MULTI",
+        ], check=True, capture_output=True)
+
+    from shapely.geometry import shape as _shape
+    rows = []
+    with open(out) as fh:
+        for line in fh:
+            try:
+                f = json.loads(line)
+                geom = _shape(f["geometry"])
+            except Exception:
+                continue
+            if geom.is_empty:
+                continue
+            p = f.get("properties") or {}
+            v = p.get("bws_score")
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                v = None
+            if v is not None and v < 0:
+                v = None
+            rows.append({"wkt": geom.wkt, "bws_score": v,
+                         "bws_label": p.get("bws_label"), "pfaf_id": p.get("pfaf_id")})
     df = pd.DataFrame(rows)
-    df["price"] = pd.to_numeric(df["price"], errors="coerce")
-    df = df.dropna(subset=["price"])
-    latest = df["period"].max()
-    df = df[df["period"] == latest]
-    df = df[df["stateid"].str.len() == 2]
-
-    fips = _state_fips()
-    df["join_key"] = df["stateid"].map(fips)
-    df = df.dropna(subset=["join_key"])
-    print(f"    EIA retail industrial price, period {latest}, {len(df)} states")
-    return df[["join_key", "price", "stateid"]].reset_index(drop=True)
+    print(f"    basins: {len(df)}  with bws_score: {df['bws_score'].notna().sum()}")
+    return df
 
 
-@fetcher("county_demographics")
-def fetch_county_demographics() -> pd.DataFrame:
-    """ACS 5-year county poverty rate and median household income.
 
-    Poverty rate is carried for EJ disclosure, not as a positive score input.
+# PAD-US designation codes that are genuinely undevelopable. Deliberately does
+# NOT include NF (National Forest) or general BLM holdings: those are
+# multiple-use lands that can and do host infrastructure under right-of-way, so
+# excluding them would zero out most of the West for no defensible reason.
+PROTECTED_DES = ["NP", "NWR", "NM", "WA", "WSA", "RNA", "ACEC", "MPA", "NT", "NLS"]
+
+
+@fetcher("protected_lands")
+def fetch_protected_lands() -> pd.DataFrame:
+    """PAD-US protected areas that constitute a hard siting exclusion."""
+    from shapely.geometry import shape as _shape
+
+    BASE = ("https://services.arcgis.com/v01gqwM5QqNysAAi/arcgis/rest/services"
+            "/Federal_Management_Agencies/FeatureServer/0")
+    des = ",".join(f"'{d}'" for d in PROTECTED_DES)
+    where = f"Own_Name IN ('NPS','FWS') OR Des_Tp IN ({des})"
+    rows = []
+    for f in _arcgis_paged(BASE, out_fields="Own_Name,Des_Tp,Unit_Nm,Mang_Name",
+                           where=where, bbox=CONUS_BBOX, page=1000):
+        g = f.get("geometry")
+        if not g:
+            continue
+        try:
+            geom = _shape(g).buffer(0)
+        except Exception:
+            continue
+        if geom.is_empty:
+            continue
+        p = f.get("properties", {}) or {}
+        rows.append({"wkt": geom.wkt, "own": p.get("Own_Name"),
+                     "des": p.get("Des_Tp"), "name": p.get("Unit_Nm")})
+    df = pd.DataFrame(rows)
+    print(f"    protected polygons: {len(df)}")
+    return df
+
+
+@fetcher("tribal_lands")
+def fetch_tribal_lands() -> pd.DataFrame:
+    """Census TIGER 2024 American Indian / Alaska Native / Native Hawaiian areas.
+
+    Carried as a jurisdictional FLAG, never a score penalty. Development on or
+    near tribal land is a sovereignty and consultation question, not a
+    desirability question.
     """
-    key = _env("CENSUS_API_KEY")
-    if not key:
-        raise RuntimeError("CENSUS_API_KEY not set")
-    url = "https://api.census.gov/data/2023/acs/acs5"
-    d = _get_json(url, {"get": "NAME,B17001_002E,B17001_001E,B19013_001E,B01003_001E",
-                        "for": "county:*", "in": "state:*", "key": key})
-    hdr, *rows = d
-    df = pd.DataFrame(rows, columns=hdr)
-    for c in ["B17001_002E", "B17001_001E", "B19013_001E", "B01003_001E"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["join_key"] = df["state"].str.zfill(2) + df["county"].str.zfill(3)
-    df["pct_poverty"] = (df["B17001_002E"] / df["B17001_001E"] * 100).round(2)
-    out = df[["join_key", "pct_poverty", "NAME"]].copy()
-    out["median_income"] = df["B19013_001E"].where(df["B19013_001E"] > 0)
-    out["population"] = df["B01003_001E"]
-    out = out.dropna(subset=["pct_poverty"])
-    print(f"    ACS 2023: {len(out)} counties")
-    return out.reset_index(drop=True)
+    from shapely.geometry import shape as _shape
 
-
-def _state_fips() -> dict:
-    return {
-        "AL":"01","AZ":"04","AR":"05","CA":"06","CO":"08","CT":"09","DE":"10",
-        "DC":"11","FL":"12","GA":"13","ID":"16","IL":"17","IN":"18","IA":"19",
-        "KS":"20","KY":"21","LA":"22","ME":"23","MD":"24","MA":"25","MI":"26",
-        "MN":"27","MS":"28","MO":"29","MT":"30","NE":"31","NV":"32","NH":"33",
-        "NJ":"34","NM":"35","NY":"36","NC":"37","ND":"38","OH":"39","OK":"40",
-        "OR":"41","PA":"42","RI":"44","SC":"45","SD":"46","TN":"47","TX":"48",
-        "UT":"49","VT":"50","VA":"51","WA":"53","WV":"54","WI":"55","WY":"56",
-    }
+    BASE = ("https://services1.arcgis.com/fBc8EJBxQRMcHlei/arcgis/rest/services"
+            "/WASO_STLPG_tl_2024_us_aiannh/FeatureServer/0")
+    rows = []
+    for f in _arcgis_paged(BASE, out_fields="NAME,NAMELSAD,GEOID",
+                           bbox=CONUS_BBOX, page=500):
+        g = f.get("geometry")
+        if not g:
+            continue
+        try:
+            geom = _shape(g).buffer(0)
+        except Exception:
+            continue
+        if geom.is_empty:
+            continue
+        p = f.get("properties", {}) or {}
+        rows.append({"wkt": geom.wkt, "name": p.get("NAMELSAD") or p.get("NAME"),
+                     "geoid": p.get("GEOID")})
+    df = pd.DataFrame(rows)
+    print(f"    tribal areas: {len(df)}")
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +481,25 @@ def fetch_existing_datacenters() -> pd.DataFrame:
 
 # ---------------------------------------------------------------------------
 
+# National layers must actually be national. An ArcGIS service whose name says
+# "United States" may hold one state's data; that silently hands one region a
+# bonus no other region can earn. Cheap to check, expensive to miss.
+NATIONAL_MIN_CELLS = 150
+
+
+def _check_coverage(lid: str, df: pd.DataFrame) -> None:
+    if df is None or df.empty or not {"lat", "lng"}.issubset(df.columns):
+        if df is not None and "wkt" in getattr(df, "columns", []):
+            print(f"    coverage: {len(df)} polygons (extent checked at join time)")
+        return
+    cells = {(round(a), round(b)) for a, b in zip(df["lat"], df["lng"])}
+    lng_span = float(df["lng"].max() - df["lng"].min())
+    print(f"    coverage: {len(cells)} 1-deg cells, lng span {lng_span:.1f} deg")
+    if len(cells) < NATIONAL_MIN_CELLS or lng_span < 40:
+        print(f"    !! WARNING {lid} looks REGIONAL, not national "
+              f"({len(cells)} cells, {lng_span:.1f} deg). Check the source URL.")
+
+
 def run(layer_ids: list[str]) -> int:
     reg = yaml.safe_load((ROOT / "sources" / "registry.yml").read_text())
     known = {l["id"]: l for l in reg["layers"]}
@@ -432,6 +516,7 @@ def run(layer_ids: list[str]) -> int:
         print(f"[fetch] {lid} ({known[lid]['name']})")
         try:
             df = FETCHERS[lid]()
+            _check_coverage(lid, df)
             dest = INTERIM / f"{lid}.parquet"
             df.to_parquet(dest, index=False, compression="zstd")
             print(f"   -> {len(df):,} rows  {dest.name}  "
