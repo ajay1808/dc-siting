@@ -64,7 +64,7 @@ factors:
 
   grid_access:
     label: Transmission & Substation Access
-    weight: 0.17
+    weight: 0.15
     inputs: [transmission_lines, substations]
     combine: max          # nearest good interconnect governs
 
@@ -114,9 +114,16 @@ factors:
     inputs: [seismic, wildfire_risk]
     combine: min          # worst hazard governs
 
+  generation_proximity:
+    label: Generation Proximity
+    weight: 0.03
+    inputs: [power_plants]
+    note: Nearby installed capacity. Overlaps grid_access by design but is
+          distinct - a plant next door is not the same as a 500kV line.
+
   market_maturity:
     label: Existing DC Cluster
-    weight: 0.04
+    weight: 0.03
     inputs: [existing_datacenters]
 
   gas_access:
@@ -149,7 +156,8 @@ profiles:
     description: Power-dominant. Latency is nearly irrelevant; cooling and
                  interconnection headroom dominate.
     weights:
-      grid_access: 0.20
+      grid_access: 0.16
+      generation_proximity: 0.04
       grid_headroom: 0.18
       power_cost: 0.12
       cooling_efficiency: 0.12
@@ -170,6 +178,7 @@ profiles:
                  scale matters much less.
     weights:
       network_latency: 0.28
+      generation_proximity: 0.00
       market_maturity: 0.16
       network_infrastructure: 0.12
       grid_access: 0.12
@@ -192,7 +201,8 @@ profiles:
       water_availability: 0.18
       cooling_efficiency: 0.16
       clean_power_potential: 0.14
-      grid_access: 0.12
+      grid_access: 0.10
+      generation_proximity: 0.02
       grid_headroom: 0.10
       buildability: 0.08
       hazard: 0.06

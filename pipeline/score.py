@@ -79,7 +79,21 @@ def count_optimum(cells_xy, feat_xy, radius_km, optimum, falloff):
 
 # --- factor computation -----------------------------------------------------
 
-def compute_layer_subscore(layer, cells_xy):
+def _normalize(vals, clamp, invert):
+    """Scale to 0..1 across an explicit clamp range.
+
+    An explicit clamp (rather than the observed min/max) keeps the scale
+    stable between refreshes -- otherwise one new outlier silently restates
+    every other cell's score.
+    """
+    lo, hi = clamp if clamp else (np.nanmin(vals), np.nanmax(vals))
+    if hi <= lo:
+        return np.full(len(vals), np.nan)
+    x = (np.clip(vals, lo, hi) - lo) / (hi - lo)
+    return 1.0 - x if invert else x
+
+
+def compute_layer_subscore(layer, cells_xy, grid):
     """Return (subscore array | None) for one registry layer."""
     lid = layer["id"]
     spec = layer.get("scoring")
@@ -87,7 +101,31 @@ def compute_layer_subscore(layer, cells_xy):
     if not spec or not src.exists():
         return None
     df = pd.read_parquet(src)
-    if df.empty or not {"lat", "lng"}.issubset(df.columns):
+    if df.empty:
+        return None
+
+    # --- areal joins: county / state published statistics --------------------
+    geom_kind = layer.get("geometry", "")
+    if geom_kind in ("join_county", "join_state"):
+        col = "county_fips" if geom_kind == "join_county" else "state_fips"
+        if col not in grid.columns or "join_key" not in df.columns:
+            return None
+        vf = spec.get("value_field")
+        cand = [c for c in df.columns if c not in ("join_key",)]
+        if not vf:
+            vf = next((c for c in ("price", "value", "score") if c in df.columns), None)
+        if vf is None or vf not in df.columns:
+            vf = next((c for c in cand if pd.api.types.is_numeric_dtype(df[c])), None)
+        if vf is None:
+            return None
+        lut = df.dropna(subset=["join_key"]).set_index("join_key")[vf]
+        vals = grid[col].map(lut).to_numpy(dtype=float)
+        method = spec.get("method", "normalize")
+        if method == "ratio_normalize":
+            return np.clip(vals, 0, 1)
+        return _normalize(vals, spec.get("clamp"), method == "normalize_invert")
+
+    if not {"lat", "lng"}.issubset(df.columns):
         return None
 
     feat_xy = project(df["lng"].to_numpy(), df["lat"].to_numpy())
@@ -127,7 +165,7 @@ def main() -> int:
 
     layer_scores: dict[str, np.ndarray] = {}
     for layer in reg["layers"]:
-        s = compute_layer_subscore(layer, cells_xy)
+        s = compute_layer_subscore(layer, cells_xy, grid)
         if s is None:
             continue
         layer_scores[layer["id"]] = s

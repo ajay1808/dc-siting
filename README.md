@@ -12,14 +12,31 @@ suitability, and explains *why* each cell scored what it did.
 |---|---|
 | Grid | H3 resolution 7 — **1,467,441 CONUS cells** (~5.16 km² each) |
 | Layers declared | 29 (all V1 = easy + medium tier) |
-| Layers ingested | 2 (`ixp`, `existing_datacenters`) |
-| Factors live | 2 of 14 — **scores are provisional** |
-| Tile payload | 41.3 MB across 3 archives, largest 29 MB |
+| Layers ingested | 8 |
+| Factors live | 6 of 15 — **scores are provisional** |
+| Tile payload | 50.1 MB across 3 archives, largest 34 MB |
 
-Scores shown in the UI are labelled PROVISIONAL until the power, cooling,
-water and land factors land. With only network/market factors live the map
-currently ranks urban carrier hotels highest, which is expected and will
-shift substantially once grid access and cooling climate are ingested.
+Scores are labelled PROVISIONAL until cooling, water, land and policy land.
+The three heaviest factors (grid access, interconnection headroom, power
+cost) are live, so rankings are already meaningful: the top states are
+Indiana, Ohio, Texas, Illinois and Virginia, and known campuses score
+Council Bluffs 72, New Albany 72, Omaha 71, Ashburn 67.
+
+Santa Clara scores 38 with a power-cost subscore of 0.00. That is correct
+behaviour, not a bug: California industrial power is the most expensive in
+the country and the Valley's data centers exist for latency and legacy
+reasons. The `edge_latency` profile ranks it far higher.
+
+### Source substitutions made during ingest
+
+| Layer | Registry primary | Actually used | Why |
+|---|---|---|---|
+| `transmission_lines` | EIA Energy Atlas | HIFLD Open FeatureServer | EIA's dcat feed does not expose the electric layers; HIFLD Open still serves transmission publicly (52,244 features). |
+| `substations` | HIFLD | OpenStreetMap | HIFLD's national substation layer is no longer public — the only reachable copy holds 128 features, not ~80k. |
+| `power_plants` | EIA v2 API | EIA-860M spreadsheet | The v2 API returns capacity but no coordinates. |
+| `interconnection_queue` | LBNL "Queued Up" | EIA-860M *Planned* sheet | LBNL returns 403 to scripted clients. The 860M planned sheet is a narrower proxy and **understates queue contention**. |
+| `retail_power_price` | EIA-861 by utility | EIA v2, state level | Utility service territory polygons are in the restricted HIFLD set. |
+| `solar_wind_potential` | `developer.nrel.gov` | `developer.nlr.gov` | NREL became the National Laboratory of the Rockies; `nrel.gov` was retired 29 May 2026. Existing keys still work. |
 
 ## Architecture
 

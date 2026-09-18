@@ -154,12 +154,15 @@ layers:
     tier: medium
     phase: 1
     role: [score]
-    geometry: join_utility
+    geometry: join_state
     auth: api_key
     api_key_env: EIA_API_KEY
     license: US Federal / public domain
     cadence: monthly
-    note: Joined to utility territory, then to grid cells. Industrial rate, c/kWh.
+    note: >
+      Industrial rate, cents/kWh. Ideally joined to utility service territory,
+      but those polygons are in the restricted HIFLD set, so V1 joins at state
+      level. Coarse but free and honest; intrastate spread is not captured.
     endpoints:
       - name: eia_861
         url: https://api.eia.gov/v2/electricity/retail-sales/data/
