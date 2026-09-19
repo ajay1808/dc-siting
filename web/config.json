@@ -152,9 +152,14 @@
   "grid_access",
   "grid_headroom",
   "power_cost",
+  "cooling_efficiency",
   "network_latency",
+  "water_availability",
+  "buildability",
+  "policy_climate",
   "generation_proximity",
-  "market_maturity"
+  "market_maturity",
+  "gas_access"
  ],
  "flags": [
   {
@@ -180,6 +185,8 @@
    "id": "active_moratorium",
    "source": "policy_climate",
    "field": "moratoria_active",
+   "comparison": "below",
+   "threshold": 30,
    "label": "Active local data center moratorium reported"
   }
  ]

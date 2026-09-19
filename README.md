@@ -12,9 +12,9 @@ suitability, and explains *why* each cell scored what it did.
 |---|---|
 | Grid | H3 resolution 7 — **1,467,441 CONUS cells** (~5.16 km² each) |
 | Layers declared | 29 (all V1 = easy + medium tier) |
-| Layers ingested | 8 |
-| Factors live | 6 of 15 — **scores are provisional** |
-| Tile payload | 50.1 MB across 3 archives, largest 34 MB |
+| Layers ingested | 16 |
+| Factors live | 11 of 15 — **scores are provisional** |
+| Tile payload | 61.2 MB across 3 archives, largest 42 MB |
 
 Scores are labelled PROVISIONAL until cooling, water, land and policy land.
 The three heaviest factors (grid access, interconnection headroom, power

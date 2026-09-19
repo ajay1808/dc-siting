@@ -122,10 +122,19 @@ def polygon_join(df, grid, value_field=None):
     geoms, vals = [], []
     for i, w in enumerate(sub["wkt"]):
         try:
-            g = _wkt.loads(w).buffer(0)
+            g = _wkt.loads(w)
         except Exception:
             continue
-        if g.is_empty:
+        # Only pay for repair when it is actually needed. buffer(0) on a large
+        # invalid MultiPolygon costs seconds each, and GEOS "within" tests
+        # against invalid geometry are pathologically slow -- that combination
+        # stalled a full scoring run for 20+ minutes.
+        if not g.is_valid:
+            try:
+                g = g.buffer(0)
+            except Exception:
+                continue
+        if g.is_empty or not g.is_valid:
             continue
         geoms.append(g)
         if value_field is not None:
@@ -133,14 +142,36 @@ def polygon_join(df, grid, value_field=None):
     if not geoms:
         return None
 
+    if value_field is None:
+        # Boolean membership only, so rasterize instead of testing exact
+        # point-in-polygon. PAD-US contains multipolygons with millions of
+        # vertices; GEOS "within" against those is minutes, while burning them
+        # into a ~500 m raster is seconds and cannot change the answer at a
+        # 5 km2 cell size.
+        from rasterio.features import rasterize
+        from rasterio.transform import from_origin
+
+        res = 0.005                       # ~500 m
+        west, south, east, north = -125.0, 24.0, -66.0, 50.0
+        w = int((east - west) / res)
+        h = int((north - south) / res)
+        transform = from_origin(west, north, res, res)
+        burned = rasterize(((g, 1) for g in geoms), out_shape=(h, w),
+                           transform=transform, fill=0, dtype="uint8",
+                           all_touched=False)
+        inv = ~transform
+        lng = grid["lng"].to_numpy()
+        lat = grid["lat"].to_numpy()
+        col = np.floor(inv.a * lng + inv.b * lat + inv.c).astype(np.int64)
+        row = np.floor(inv.d * lng + inv.e * lat + inv.f).astype(np.int64)
+        ok = (row >= 0) & (row < h) & (col >= 0) & (col < w)
+        mask = np.zeros(len(lng), dtype=bool)
+        mask[ok] = burned[row[ok], col[ok]] == 1
+        return mask
+
     tree = STRtree(geoms)
     pts = _cell_points(grid)
     ci, gi = tree.query(pts, predicate="within")
-
-    if value_field is None:
-        mask = np.zeros(len(pts), dtype=bool)
-        mask[ci] = True
-        return mask
 
     out = np.full(len(pts), np.nan)
     varr = np.asarray(vals)
@@ -170,6 +201,32 @@ def compute_layer_subscore(layer, cells_xy, grid):
     """Return (subscore array | None) for one registry layer."""
     lid = layer["id"]
     spec = layer.get("scoring")
+
+    # --- raster layers: sample the value under each cell centroid ------------
+    tif = INTERIM / f"{lid}.tif"
+    if spec and tif.exists():
+        import rasterio
+        with rasterio.open(tif) as ds:
+            band = ds.read(1).astype("float32")
+            inv = ~ds.transform
+            h, w = band.shape
+        # rasterio's ds.sample() is a per-point Python generator: on 1.47M
+        # cells it ran for 40+ minutes. Applying the inverse affine as array
+        # maths and indexing the band directly does the same job in ~1 second.
+        lng = grid["lng"].to_numpy()
+        lat = grid["lat"].to_numpy()
+        col = inv.a * lng + inv.b * lat + inv.c
+        row = inv.d * lng + inv.e * lat + inv.f
+        col = np.floor(col).astype(np.int64)
+        row = np.floor(row).astype(np.int64)
+        ok = (row >= 0) & (row < h) & (col >= 0) & (col < w)
+        vals = np.full(len(lng), np.nan)
+        vals[ok] = band[row[ok], col[ok]]
+        vals[~np.isfinite(vals)] = np.nan
+        method = spec.get("method", "normalize")
+        print(f"      (raster sample covered {np.isfinite(vals).mean():.1%} of cells)")
+        return _normalize(vals, spec.get("clamp"), method == "normalize_invert")
+
     src = INTERIM / f"{lid}.parquet"
     if not spec or not src.exists():
         return None
@@ -336,13 +393,33 @@ def main() -> int:
             continue
         fdf = pd.read_parquet(src)
         if "wkt" in fdf.columns:
-            fm = polygon_join(fdf, grid)
+            field = flag.get("field")
+            if field and field in fdf.columns:
+                # A threshold flag must compare the polygon's VALUE. Using bare
+                # membership here flagged every cell inside any basin -- 99.9%
+                # of the grid -- instead of the genuinely water-stressed ones.
+                vals = polygon_join(fdf, grid, value_field=field)
+                fm = (np.isfinite(vals)
+                      & (vals >= float(flag.get("threshold", 0)))) \
+                    if vals is not None else None
+            else:
+                fm = polygon_join(fdf, grid)
         elif "join_key" in fdf.columns and flag.get("field"):
+            field = flag["field"]
+            if field not in fdf.columns:
+                print(f"  [flag]    {flag['id']:<22} SKIPPED - "
+                      f"'{field}' not in {lid}")
+                continue
             col = ("county_fips" if by_id.get(lid, {}).get("geometry") == "join_county"
                    else "state_fips")
-            lut = fdf.dropna(subset=["join_key"]).set_index("join_key")[flag["field"]]
+            lut = fdf.dropna(subset=["join_key"]).set_index("join_key")[field]
             vals = grid[col].map(lut).to_numpy(dtype=float)
-            fm = np.isfinite(vals) & (vals >= float(flag.get("threshold", 0)))
+            thr = float(flag.get("threshold", 0))
+            # Some fields flag on a LOW value: the policy rubric scores
+            # moratoria_active as 100 = no moratoria, so "flag it" means below.
+            fm = (np.isfinite(vals) & (vals <= thr)
+                  if flag.get("comparison") == "below"
+                  else np.isfinite(vals) & (vals >= thr))
         else:
             continue
         if fm is None:

@@ -727,4 +727,6 @@ layers:
     scoring:
       factor: policy_climate
       direction: positive
-      method: weighted_rubric
+      method: normalize
+      value_field: policy_score
+      clamp: [0, 100]

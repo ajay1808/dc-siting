@@ -23,6 +23,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -87,9 +88,9 @@ def ask(code: str, key: str) -> dict:
     name = code
     body = {
         "model": MODEL,
-        "max_tokens": 2000,
+        "max_tokens": 3000,
         "tools": [{"type": "web_search_20250305", "name": "web_search",
-                   "max_uses": 6}],
+                   "max_uses": 3}],
         "messages": [{"role": "user", "content": PROMPT.format(
             code=code, name=name,
             fields="\n".join(f"- {k}: {d}" for k, d in FIELDS))}],
@@ -108,11 +109,23 @@ def ask(code: str, key: str) -> dict:
             with urllib.request.urlopen(req, timeout=900) as r:
                 resp = json.load(r)
             break
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = json.loads(e.read()).get("error", {}).get("message", "")
+            except Exception:
+                pass
+            # A 400 is a permanent problem (bad request, or -- the common case
+            # here -- an exhausted credit balance). Retrying just burns time.
+            if e.code == 400:
+                raise RuntimeError(f"HTTP 400: {detail}") from None
+            last = RuntimeError(f"HTTP {e.code}: {detail or e.reason}")
+            time.sleep(15 if e.code == 429 else 10)
         except Exception as e:  # noqa: BLE001
             last = e
             time.sleep(10)
     else:
-        raise RuntimeError(f"api call failed twice: {type(last).__name__}")
+        raise RuntimeError(f"api call failed twice: {last}")
 
     text = "".join(b.get("text", "") for b in resp.get("content", [])
                    if b.get("type") == "text")
@@ -120,7 +133,15 @@ def ask(code: str, key: str) -> dict:
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
         raise ValueError("no JSON object in model reply")
-    data = json.loads(m.group(0))
+    raw = m.group(0)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        # Models occasionally emit an unescaped quote inside a note string.
+        # Repair just that case rather than discarding a paid-for response.
+        fixed = re.sub(r'(?<="note":\s")(.*?)(?="\s*,\s*"sources")',
+                       lambda mm: mm.group(1).replace('"', "'"), raw, flags=re.S)
+        data = json.loads(fixed)
     data["_usage"] = {k: usage.get(k) for k in
                       ("input_tokens", "output_tokens",
                        "server_tool_use")}

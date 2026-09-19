@@ -55,6 +55,8 @@ flags:
   - id: active_moratorium
     source: policy_climate
     field: moratoria_active
+    comparison: below      # rubric scores 100 = no moratoria, so low = flag
+    threshold: 30          # median state is 35; 30 keeps the flag selective
     label: Active local data center moratorium reported
 
 # --- factors -----------------------------------------------------------------

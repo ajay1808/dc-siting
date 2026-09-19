@@ -84,7 +84,7 @@ def _arcgis_paged(base: str, out_fields: str = "*", where: str = "1=1",
                       "spatialRel": "esriSpatialRelIntersects", "inSR": "4326"})
         url = f"{base}/query?{urllib.parse.urlencode(q)}"
         req = urllib.request.Request(url, headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=180) as r:
+        with urllib.request.urlopen(req, timeout=600) as r:
             fc = json.load(r)
         feats = fc.get("features", [])
         if not feats:
@@ -182,18 +182,25 @@ def fetch_substations() -> pd.DataFrame:
     queries hard and will 429 mid-run; without per-band caching a single
     failed band means refetching everything and getting throttled again.
     """
-    BANDS = [(24, 33), (33, 38), (38, 43), (43, 50)]
+    # Tiles, not bands: (lat_lo, lat_hi, lng_lo, lng_hi). Overpass refused the
+    # full-width northern band for over two hours of backoff, so that one is
+    # split by longitude. Narrow queries succeed where wide ones are throttled.
+    TILES = [(24, 33, -125, -66), (33, 38, -125, -66), (38, 43, -125, -66),
+             (43, 50, -125, -105), (43, 50, -105, -90), (43, 50, -90, -66)]
     RAW.mkdir(parents=True, exist_ok=True)
     frames, missing = [], []
 
-    for lo, hi in BANDS:
-        cache = RAW / f"osm_substations_{lo}_{hi}.parquet"
+    for lo, hi, wlng, elng in TILES:
+        full = (wlng, elng) == (-125, -66)
+        cache = (RAW / f"osm_substations_{lo}_{hi}.parquet" if full
+                 else RAW / f"osm_substations_{lo}_{hi}_{wlng}_{elng}.parquet")
         if cache.exists():
             frames.append(pd.read_parquet(cache))
-            print(f"    band {lo}-{hi}: cached ({len(frames[-1]):,})")
+            print(f"    tile {lo}-{hi} {wlng}..{elng}: cached ({len(frames[-1]):,})")
             continue
         query = (f'[out:json][timeout:600];'
-                 f'nwr["power"="substation"]({lo},-125,{hi},-66);out center tags;')
+                 f'nwr["power"="substation"]({lo},{wlng},{hi},{elng});'
+                 f'out center tags;')
         body = urllib.parse.urlencode({"data": query}).encode()
         got = None
         for attempt in range(3):
@@ -205,17 +212,17 @@ def fetch_substations() -> pd.DataFrame:
                         got = json.load(r).get("elements", [])
                     break
                 except Exception as e:  # noqa: BLE001
-                    print(f"    band {lo}-{hi} {ep.split('//')[1][:22]} "
-                          f"attempt {attempt+1}: {type(e).__name__}")
+                    print(f"    tile {lo}-{hi} {wlng}..{elng} "
+                          f"{ep.split('//')[1][:18]} try{attempt+1}: {type(e).__name__}")
             if got is not None:
                 break
             # Overpass throttling clears on the order of minutes, not seconds.
-            wait = 90 * (attempt + 1)
-            print(f"    band {lo}-{hi}: backing off {wait}s")
+            wait = 60 * (attempt + 1)
+            print(f"    tile {lo}-{hi}: backing off {wait}s")
             time.sleep(wait)
 
         if got is None:
-            missing.append((lo, hi))
+            missing.append((lo, hi, wlng, elng))
             continue
 
         rows = []
@@ -231,12 +238,12 @@ def fetch_substations() -> pd.DataFrame:
                          "name": t.get("name"), "operator": t.get("operator")})
         band = pd.DataFrame(rows)
         band.to_parquet(cache, index=False, compression="zstd")
-        print(f"    band {lo}-{hi}: fetched {len(band):,}")
+        print(f"    tile {lo}-{hi} {wlng}..{elng}: fetched {len(band):,}")
         frames.append(band)
         time.sleep(5)
 
     if missing:
-        print(f"    !! bands still missing: {missing} - rerun to fill them in")
+        print(f"    !! tiles still missing: {missing} - rerun to fill them in")
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
@@ -333,23 +340,37 @@ def fetch_protected_lands() -> pd.DataFrame:
 
     BASE = ("https://services.arcgis.com/v01gqwM5QqNysAAi/arcgis/rest/services"
             "/Federal_Management_Agencies/FeatureServer/0")
+    # A single OR'd WHERE over 75k large polygons times the server out. Split
+    # into two simple IN queries and page small -- these geometries are big.
     des = ",".join(f"'{d}'" for d in PROTECTED_DES)
-    where = f"Own_Name IN ('NPS','FWS') OR Des_Tp IN ({des})"
-    rows = []
-    for f in _arcgis_paged(BASE, out_fields="Own_Name,Des_Tp,Unit_Nm,Mang_Name",
-                           where=where, bbox=CONUS_BBOX, page=1000):
-        g = f.get("geometry")
-        if not g:
-            continue
-        try:
-            geom = _shape(g).buffer(0)
-        except Exception:
-            continue
-        if geom.is_empty:
-            continue
-        p = f.get("properties", {}) or {}
-        rows.append({"wkt": geom.wkt, "own": p.get("Own_Name"),
-                     "des": p.get("Des_Tp"), "name": p.get("Unit_Nm")})
+    queries = ["Own_Name IN ('NPS','FWS')", f"Des_Tp IN ({des})"]
+    rows, seen = [], set()
+    for where in queries:
+        print(f"    query: {where[:60]}")
+        for f in _arcgis_paged(BASE, out_fields="Own_Name,Des_Tp,Unit_Nm",
+                               where=where, bbox=CONUS_BBOX, page=250):
+            g = f.get("geometry")
+            if not g:
+                continue
+            try:
+                geom = _shape(g).buffer(0)
+            except Exception:
+                continue
+            if geom.is_empty:
+                continue
+            p = f.get("properties", {}) or {}
+            key = (p.get("Unit_Nm"), p.get("Des_Tp"), round(geom.area, 8))
+            if key in seen:          # the two queries overlap on NPS wilderness
+                continue
+            seen.add(key)
+            # Full-precision PAD-US boundaries serialize to ~157 MB of WKT and
+            # make the point-in-polygon join crawl. The analysis grid is 5 km2
+            # hexes, so ~100 m tolerance loses nothing that can affect a cell.
+            geom = geom.simplify(0.001, preserve_topology=True)
+            if geom.is_empty:
+                continue
+            rows.append({"wkt": geom.wkt, "own": p.get("Own_Name"),
+                         "des": p.get("Des_Tp"), "name": p.get("Unit_Nm")})
     df = pd.DataFrame(rows)
     print(f"    protected polygons: {len(df)}")
     return df
@@ -384,6 +405,104 @@ def fetch_tribal_lands() -> pd.DataFrame:
                      "geoid": p.get("GEOID")})
     df = pd.DataFrame(rows)
     print(f"    tribal areas: {len(df)}")
+    return df
+
+
+
+@fetcher("slope")
+def fetch_slope() -> pd.DataFrame:
+    """Terrain slope from USGS 3DEP, as a GeoTIFF sampled later per cell.
+
+    One exportImage call for all of CONUS rather than thousands of tiles.
+    At 4000x1763 the pixel is roughly 1.3 x 1.6 km, so this measures REGIONAL
+    terrain -- "is this mountainous" -- not the slope of a specific 50-acre
+    pad. Good enough to screen out the Rockies; not a substitute for a site
+    survey. 8000px wide returns HTTP 500 from the service.
+
+    Returns an empty frame: the artifact is the .tif, which score.py samples.
+    """
+    import numpy as _np
+    import rasterio as _rio
+
+    RAW.mkdir(parents=True, exist_ok=True)
+    dem = RAW / "conus_dem.tif"
+    if not dem.exists() or dem.stat().st_size < 1_000_000:
+        q = {"bbox": "-125,24,-66,50", "bboxSR": "4326", "imageSR": "4326",
+             "size": "4000,1763", "format": "tiff", "pixelType": "F32", "f": "image"}
+        url = ("https://elevation.nationalmap.gov/arcgis/rest/services/"
+               "3DEPElevation/ImageServer/exportImage?" + urllib.parse.urlencode(q))
+        print("    requesting CONUS DEM (single exportImage call)")
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=1200) as r:
+            dem.write_bytes(r.read())
+
+    with _rio.open(dem) as ds:
+        a = ds.read(1).astype("float32")
+        res_x, res_y = ds.res
+        profile = ds.profile
+    a[(a < -500) | (a > 6000)] = _np.nan
+
+    midlat = 37.0
+    mx = res_x * 111320 * _np.cos(_np.radians(midlat))
+    my = res_y * 110574
+    gy, gx = _np.gradient(a, my, mx)
+    slope_pct = _np.hypot(gx, gy) * 100.0        # rise/run as percent
+
+    profile.update(dtype="float32", count=1, nodata=_np.nan, compress="deflate")
+    out = INTERIM / "slope.tif"
+    with _rio.open(out, "w", **profile) as dst:
+        dst.write(slope_pct.astype("float32"), 1)
+    print(f"    wrote {out.name}  median slope "
+          f"{_np.nanmedian(slope_pct):.2f}%  p95 {_np.nanpercentile(slope_pct,95):.2f}%")
+    return pd.DataFrame()
+
+
+
+@fetcher("policy_climate")
+def fetch_policy_climate() -> pd.DataFrame:
+    """Assemble the state policy layer from cached policy_scan.py output.
+
+    Reads only what policy_scan already validated (every field carries >=1
+    source URL). States with no cached record are simply absent, and score.py
+    renormalizes around them rather than scoring them zero.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from policy_scan import STATES as _ST
+
+    cache = RAW / "policy"
+    if not cache.exists():
+        raise RuntimeError("no policy cache - run pipeline/policy_scan.py first")
+
+    rows = []
+    for f in sorted(cache.glob("*.json")):
+        rec = json.loads(f.read_text())
+        fields = rec.get("fields") or {}
+        if not fields:
+            continue
+        scores = [v["score"] for v in fields.values() if v.get("score") is not None]
+        if not scores:
+            continue
+        code = rec.get("state") or f.stem
+        fips = _ST.get(code)
+        if not fips:
+            continue
+        row = {
+            "join_key": fips, "state": code,
+            "policy_score": sum(scores) / len(scores),
+            "n_fields": len(scores),
+            "n_sources": sum(len(v.get("sources", [])) for v in fields.values()),
+            "as_of": rec.get("as_of"),
+        }
+        # Keep each field too: the UI shows the breakdown and the moratorium
+        # flag needs its individual value, not the state average.
+        for k, v in fields.items():
+            row[k] = v.get("score")
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    print(f"    states with policy data: {len(df)} / {len(_ST)}")
+    if len(df):
+        print(f"    mean fields cited per state: {df['n_fields'].mean():.1f}/6")
     return df
 
 
@@ -516,6 +635,12 @@ def run(layer_ids: list[str]) -> int:
         print(f"[fetch] {lid} ({known[lid]['name']})")
         try:
             df = FETCHERS[lid]()
+            if df is None or df.empty:
+                tif = INTERIM / f"{lid}.tif"
+                if tif.exists():
+                    print(f"   -> raster artifact {tif.name} "
+                          f"({tif.stat().st_size/1e6:.1f} MB)\n")
+                    continue
             _check_coverage(lid, df)
             dest = INTERIM / f"{lid}.parquet"
             df.to_parquet(dest, index=False, compression="zstd")
