@@ -443,16 +443,19 @@ layers:
     license: NREL / public domain
     cadence: static
     endpoints:
-      - name: nrel_nsrdb
-        url: https://developer.nrel.gov/docs/solar/nsrdb/
+      - name: nlr_solar
+        url: https://developer.nlr.gov/api/solar/solar_resource/v1.json
         format: json_api
-      - name: nrel_wind
-        url: https://developer.nrel.gov/docs/wind/wind-toolkit/
+      - name: nlr_docs
+        url: https://developer.nlr.gov/docs/solar/nsrdb/
         format: json_api
     scoring:
       factor: clean_power_potential
       direction: positive
-      method: normalize
+      method: idw
+      value_field: ghi
+      clamp: [3.2, 6.2]     # kWh/m2/day annual GHI across CONUS
+      k: 4
 
 # =============================================================================
 # HAZARD / EXCLUSION  — hard masks
@@ -483,6 +486,33 @@ layers:
       values: [A, AE, AH, AO, AR, A99, V, VE]
       mode: soft            # penalize heavily rather than hard-zero
       penalty: 0.75
+
+  - id: hazard_nri
+    name: Multi-Hazard Risk (FEMA National Risk Index)
+    category: hazard
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: join_county
+    auth: none
+    license: FEMA / public domain
+    cadence: annual
+    note: >
+      Single public federal source covering earthquake, wildfire, flood,
+      hurricane, tornado, landslide, ice storm and heat wave. Used because
+      USFS blocks scripted clients (403) and USGS exposes seismic only as
+      contour arcs. Weighted so siting-relevant hazards (quake, flood, fire)
+      count more than design-solvable ones (tornado, hail).
+    endpoints:
+      - name: fema_nri_counties
+        url: https://services.arcgis.com/XG15cJAlne2vxtgt/arcgis/rest/services/National_Risk_Index_Counties/FeatureServer/0
+        format: arcgis_rest
+    scoring:
+      factor: hazard
+      direction: negative
+      method: normalize_invert
+      value_field: hazard_index
+      clamp: [0, 60]
 
   - id: seismic
     name: Seismic Hazard (PGA 2% in 50yr)

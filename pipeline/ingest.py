@@ -549,7 +549,11 @@ NLCD_SUITABILITY = {
     43: 0.32,  # mixed forest
     51: 0.80, 32: 0.85, 72: 0.75, 73: 0.70, 74: 0.70,   # AK classes, unused L48
 }
-WETLAND_CLASSES = {11, 12, 90, 95}
+# ONLY true wetlands trigger the exclusion. Open water (11) deliberately does
+# NOT: a 5 km2 cell that is half river is still half buildable, and riverfront
+# is actively desirable for cooling. Lumping water in here scored The Dalles,
+# an operating Google campus on the Columbia, at exactly 0.
+WETLAND_CLASSES = {90, 95}
 
 
 @fetcher("land_cover")
@@ -564,7 +568,8 @@ def fetch_land_cover() -> pd.DataFrame:
 
     Writes two rasters:
       land_cover.tif          mean suitability 0-1  (buildability factor)
-      land_cover_wetland.tif  wetland+water fraction (exclusion)
+      land_cover_wetland.tif  TRUE wetland fraction (exclusion; excludes open
+                              water, which is handled by suitability instead)
     """
     import io as _io
     import numpy as _np
@@ -627,7 +632,7 @@ def fetch_land_cover() -> pd.DataFrame:
         with _rio.open(INTERIM / f"{name}.tif", "w", **prof) as dst:
             dst.write(arr.astype("float32"), 1)
     print(f"    mean suitability {_np.nanmean(suit_c):.3f} | "
-          f"cells >50% wetland/water: {_np.nanmean(wet_c > 0.5):.2%}")
+          f"pixels >50% true wetland: {_np.nanmean(wet_c > 0.5):.2%}")
     return pd.DataFrame()
 
 
@@ -773,6 +778,134 @@ def fetch_seismic() -> pd.DataFrame:
         "https://www.usgs.gov/programs/earthquake-hazards/"
         "seismic-hazard-maps-and-site-specific-data "
         "-> put the GeoTIFF in data/raw/seismic/")
+
+
+
+# FEMA NRI hazard components relevant to a data center, and how much each
+# should count. NRI's *_RISKS fields are 0-100 composite risk scores that
+# already fold in exposure, frequency and community resilience.
+#
+# Weighted rather than max-pooled on purpose: tornado and hail are DESIGN
+# problems (you build to them - tornado alley hosts plenty of campuses),
+# whereas earthquake, flood and wildfire are SITING problems that change
+# whether a site is viable or insurable at all.
+NRI_HAZARDS = {
+    "ERQK_RISKS": 1.00,   # earthquake  - structural, hardest to engineer around
+    "IFLD_RISKS": 1.00,   # riverine flood
+    "CFLD_RISKS": 1.00,   # coastal flood
+    "WFIR_RISKS": 0.90,   # wildfire    - direct facility + transmission threat
+    "HRCN_RISKS": 0.70,   # hurricane   - wind plus multi-day outage
+    "LNDS_RISKS": 0.60,   # landslide
+    "ISTM_RISKS": 0.45,   # ice storm   - grid outage driver
+    "HWAV_RISKS": 0.40,   # heat wave   - cooling + grid stress
+    "TRND_RISKS": 0.35,   # tornado     - design problem, not siting
+}
+
+
+@fetcher("hazard_nri")
+def fetch_hazard_nri() -> pd.DataFrame:
+    """FEMA National Risk Index, county level.
+
+    Replaces the separate USGS seismic and USFS wildfire layers, both of which
+    block scripted access (USFS 403s any non-browser client; USGS publishes
+    seismic only as contour arcs, not a value surface). NRI is one public
+    federal dataset that covers both, plus flood, hurricane and tornado, and
+    joins straight onto county FIPS.
+    """
+    BASE = ("https://services.arcgis.com/XG15cJAlne2vxtgt/arcgis/rest/services"
+            "/National_Risk_Index_Counties/FeatureServer/0")
+    cols = ["STCOFIPS"] + list(NRI_HAZARDS)
+    rows = []
+    for f in _arcgis_paged(BASE, out_fields=",".join(cols), geometry=False, page=1000):
+        rows.append((f.get("properties") or {}))
+    df = pd.DataFrame(rows)
+    if df.empty:
+        raise RuntimeError("NRI returned no rows")
+
+    for c in NRI_HAZARDS:
+        df[c] = pd.to_numeric(df.get(c), errors="coerce")
+
+    wsum = sum(NRI_HAZARDS.values())
+    acc = None
+    for c, w in NRI_HAZARDS.items():
+        part = df[c].fillna(0) * w
+        acc = part if acc is None else acc + part
+    df["hazard_index"] = acc / wsum
+
+    df["join_key"] = df["STCOFIPS"].astype(str).str.zfill(5)
+    out = df[["join_key", "hazard_index"] + list(NRI_HAZARDS)].dropna(subset=["join_key"])
+    print(f"    NRI counties: {len(out)}  hazard_index "
+          f"median {out['hazard_index'].median():.1f} max {out['hazard_index'].max():.1f}")
+    return out.reset_index(drop=True)
+
+
+
+@fetcher("solar_wind_potential")
+def fetch_solar_wind_potential() -> pd.DataFrame:
+    """Solar resource (GHI/DNI) sampled on a coarse H3 grid, IDW'd later.
+
+    NLR's API is per-point and rate limited to 1,000 requests/hour, so this
+    samples at H3 resolution 3 (~651 CONUS cells, one rate window) rather than
+    per analysis cell. Solar resource varies smoothly at continental scale, so
+    interpolating from res 3 loses very little -- and this factor carries only
+    0.02 weight, so a finer sample would not be a proportionate use of a free
+    public API.
+
+    Caveat: this is SOLAR only. Wind resource is spiky (ridgelines, gaps) and
+    would not survive this interpolation; the NLR wind toolkit is a separate,
+    heavier API. "Renewable potential" here therefore means solar.
+    """
+    import h3 as _h3
+
+    key = _env("NREL_API_KEY")
+    if not key:
+        raise RuntimeError("NREL_API_KEY not set (note: NREL is now NLR)")
+
+    cache = RAW / "nlr_solar.json"
+    done = json.loads(cache.read_text()) if cache.exists() else {}
+
+    # coarse cells covering CONUS
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from grid import load_states, NON_CONUS
+    from shapely.geometry import shape as _shape
+    cells = set()
+    for st in load_states():
+        if str(st["id"]).zfill(2) in NON_CONUS:
+            continue
+        try:
+            cells |= set(_h3.geo_to_cells(_shape(st["geometry"]).buffer(0), 3))
+        except Exception:
+            continue
+    cells = sorted(cells)
+    todo = [c for c in cells if c not in done]
+    print(f"    coarse cells {len(cells)}, cached {len(done)}, to fetch {len(todo)}")
+
+    for i, c in enumerate(todo):
+        lat, lng = _h3.cell_to_latlng(c)
+        url = ("https://developer.nlr.gov/api/solar/solar_resource/v1.json?"
+               + urllib.parse.urlencode({"lat": round(lat, 4), "lon": round(lng, 4),
+                                         "api_key": key}))
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=90) as r:
+                o = (json.load(r).get("outputs") or {})
+            ghi = (o.get("avg_ghi") or {}).get("annual")
+            dni = (o.get("avg_dni") or {}).get("annual")
+            if isinstance(ghi, (int, float)):
+                done[c] = {"lat": lat, "lng": lng, "ghi": ghi, "dni": dni}
+        except Exception as e:  # noqa: BLE001
+            print(f"    {c}: {type(e).__name__}")
+        if (i + 1) % 50 == 0:
+            cache.write_text(json.dumps(done))
+            print(f"    {i+1}/{len(todo)} fetched")
+        time.sleep(1.2)          # stay well inside 1000/hr
+    cache.write_text(json.dumps(done))
+
+    df = pd.DataFrame([{"lat": v["lat"], "lng": v["lng"], "ghi": v["ghi"],
+                        "dni": v.get("dni")} for v in done.values()])
+    print(f"    solar points: {len(df)}  GHI {df['ghi'].min():.2f}-{df['ghi'].max():.2f}")
+    return df
 
 
 # ---------------------------------------------------------------------------

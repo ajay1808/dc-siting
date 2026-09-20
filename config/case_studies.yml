@@ -1,0 +1,76 @@
+# =============================================================================
+# CALIBRATION CASE STUDIES
+# =============================================================================
+# Ground truth for fitting the default weighting. Weights are otherwise just
+# my opinion; these make the model answerable to reality.
+#
+# POSITIVES are operating or under-construction large campuses - sites where
+# real capital was committed after real diligence. They should score near
+# `target_positive`.
+#
+# NEGATIVES are the important half. With positives alone an optimiser simply
+# inflates whatever the positives happen to score well on. Each negative names
+# WHY it is bad, and they are chosen to be individually instructive:
+#   - dense urban   -> superficially great infra, no room (the Manhattan case)
+#   - protected     -> exclusion sanity check
+#   - remote        -> no grid, no fiber, nothing
+#   - hazard/terrain-> unbuildable or uninsurable
+# =============================================================================
+
+targets:
+  positive: 80      # a proven campus should land here
+  negative: 22      # a clearly wrong site should land here
+  # Regularisation toward the hand-set prior. 0 = pure data fit (overfits
+  # badly with ~40 points and 15 factors), 1 = ignore the data entirely.
+  prior_strength: 0.45   # raised: 0.25 let the fit zero out real factors
+
+positives:
+  - {name: "Ashburn / Loudoun VA",      lat: 39.04,  lng: -77.49, note: "densest DC market on earth"}
+  - {name: "New Albany OH",             lat: 40.08,  lng: -82.80, note: "Meta, AWS, Google"}
+  - {name: "Council Bluffs IA",         lat: 41.26,  lng: -95.86, note: "Google multi-GW"}
+  - {name: "Papillion / Omaha NE",      lat: 41.15,  lng: -96.11, note: "Meta, Google"}
+  - {name: "Prineville OR",             lat: 44.30,  lng: -120.84, note: "Meta, Apple"}
+  - {name: "The Dalles OR",             lat: 45.60,  lng: -121.18, note: "Google, hydro"}
+  - {name: "Quincy WA",                 lat: 47.23,  lng: -119.85, note: "Microsoft, hydro"}
+  - {name: "Mount Pleasant WI",         lat: 42.72,  lng: -87.90, note: "Microsoft AI campus"}
+  - {name: "Goodyear AZ",               lat: 33.44,  lng: -112.36, note: "Microsoft"}
+  - {name: "Mesa AZ",                   lat: 33.42,  lng: -111.72, note: "Google, Meta"}
+  - {name: "Fort Worth TX",             lat: 32.86,  lng: -97.42, note: "Meta"}
+  - {name: "San Antonio TX",            lat: 29.45,  lng: -98.62, note: "Microsoft, Meta"}
+  - {name: "Douglas County GA",         lat: 33.70,  lng: -84.77, note: "Google"}
+  - {name: "Huntsville AL",             lat: 34.73,  lng: -86.59, note: "Meta, Google"}
+  - {name: "Henrico County VA",         lat: 37.57,  lng: -77.35, note: "Meta"}
+  - {name: "Clarksville TN",            lat: 36.55,  lng: -87.31, note: "Google"}
+  - {name: "Cheyenne WY",               lat: 41.14,  lng: -104.82, note: "Microsoft, Meta"}
+  - {name: "Altoona IA",                lat: 41.65,  lng: -93.47, note: "Meta"}
+  - {name: "New Carlisle IN",           lat: 41.70,  lng: -86.50, note: "AWS multi-GW"}
+  - {name: "Abilene TX",                lat: 32.45,  lng: -99.74, note: "Stargate"}
+  - {name: "Eagle Mountain UT",         lat: 40.31,  lng: -112.01, note: "Meta"}
+  - {name: "Kansas City MO",            lat: 39.28,  lng: -94.62, note: "Meta"}
+  - {name: "Madison County MS",         lat: 32.60,  lng: -90.06, note: "AWS"}
+  - {name: "Hillsboro OR",              lat: 45.53,  lng: -122.94, note: "major fiber hub"}
+  - {name: "Manassas VA",               lat: 38.75,  lng: -77.48, note: "AWS"}
+  - {name: "Columbus OH",               lat: 39.99,  lng: -83.10, note: "AWS"}
+  - {name: "Bessemer AL",               lat: 33.38,  lng: -86.97, note: "announced campus"}
+  - {name: "Cedar Rapids IA",           lat: 41.98,  lng: -91.67, note: "QTS/Meta corridor"}
+
+negatives:
+  # dense urban - the Manhattan failure mode
+  - {name: "Manhattan NY",              lat: 40.75,  lng: -73.98, why: "no developable footprint, land cost"}
+  - {name: "Downtown San Francisco CA", lat: 37.79,  lng: -122.40, why: "no room, highest power cost"}
+  - {name: "Downtown Boston MA",        lat: 42.36,  lng: -71.06, why: "no room, constrained grid"}
+  - {name: "Chicago Loop IL",           lat: 41.88,  lng: -87.63, why: "no room"}
+  # protected / excluded
+  - {name: "Yosemite NP CA",            lat: 37.75,  lng: -119.59, why: "national park"}
+  - {name: "Everglades FL",             lat: 25.86,  lng: -80.90, why: "wetland, CWA 404"}
+  - {name: "Big Sur CA",                lat: 36.27,  lng: -121.81, why: "terrain + protected coast"}
+  # remote - no grid, no fiber
+  - {name: "Central Nevada desert",     lat: 39.00,  lng: -117.20, why: "no grid, no water, no fiber"}
+  - {name: "Eastern Montana",           lat: 46.60,  lng: -105.60, why: "no load centre, no fiber"}
+  - {name: "West Texas Big Bend",       lat: 29.90,  lng: -103.20, why: "remote, no interconnect"}
+  - {name: "Northern Maine",            lat: 46.70,  lng: -68.90, why: "remote, weak grid"}
+  # hazard / terrain
+  - {name: "Aspen CO",                  lat: 39.19,  lng: -106.82, why: "mountain terrain, no capacity"}
+  - {name: "Key West FL",               lat: 24.56,  lng: -81.78, why: "island, hurricane, flood"}
+  - {name: "Outer Banks NC",            lat: 35.55,  lng: -75.47, why: "barrier island, flood"}
+  - {name: "Death Valley CA",           lat: 36.50,  lng: -117.00, why: "extreme heat, no infrastructure"}

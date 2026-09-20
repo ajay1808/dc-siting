@@ -143,31 +143,42 @@ def polygon_join(df, grid, value_field=None):
         return None
 
     if value_field is None:
-        # Boolean membership only, so rasterize instead of testing exact
-        # point-in-polygon. PAD-US contains multipolygons with millions of
-        # vertices; GEOS "within" against those is minutes, while burning them
-        # into a ~500 m raster is seconds and cannot change the answer at a
-        # 5 km2 cell size.
+        # Returns the FRACTION of each cell covered, not a boolean.
+        #
+        # Binary any-overlap was wrong at this cell size: it zeroed The Dalles,
+        # an operating Google campus, because the Columbia River Gorge scenic
+        # area clips the cell -- even though no protected polygon contains the
+        # centroid and the cell is 54% buildable. A 5 km2 hex that is 10%
+        # national park is not unbuildable; one that is 95% park is.
+        #
+        # Rasterising then block-averaging gives coverage fraction cheaply.
+        # GEOS "within" against PAD-US multipolygons with millions of vertices
+        # is minutes; this is seconds and cannot change the answer materially.
         from rasterio.features import rasterize
         from rasterio.transform import from_origin
 
-        res = 0.005                       # ~500 m
+        FINE = 0.004                      # ~440 m burn
+        K = 6                             # -> ~2.6 km blocks, about one cell
         west, south, east, north = -125.0, 24.0, -66.0, 50.0
-        w = int((east - west) / res)
-        h = int((north - south) / res)
-        transform = from_origin(west, north, res, res)
+        w = int((east - west) / FINE)
+        h = int((north - south) / FINE)
         burned = rasterize(((g, 1) for g in geoms), out_shape=(h, w),
-                           transform=transform, fill=0, dtype="uint8",
-                           all_touched=False)
-        inv = ~transform
+                           transform=from_origin(west, north, FINE, FINE),
+                           fill=0, dtype="uint8", all_touched=False)
+        h2, w2 = h // K, w // K
+        frac = (burned[:h2 * K, :w2 * K]
+                .reshape(h2, K, w2, K).mean(axis=(1, 3)).astype("float32"))
+        del burned
+        coarse = from_origin(west, north, FINE * K, FINE * K)
+        inv = ~coarse
         lng = grid["lng"].to_numpy()
         lat = grid["lat"].to_numpy()
         col = np.floor(inv.a * lng + inv.b * lat + inv.c).astype(np.int64)
         row = np.floor(inv.d * lng + inv.e * lat + inv.f).astype(np.int64)
-        ok = (row >= 0) & (row < h) & (col >= 0) & (col < w)
-        mask = np.zeros(len(lng), dtype=bool)
-        mask[ok] = burned[row[ok], col[ok]] == 1
-        return mask
+        ok = (row >= 0) & (row < h2) & (col >= 0) & (col < w2)
+        out = np.zeros(len(lng), dtype="float32")
+        out[ok] = frac[row[ok], col[ok]]
+        return out
 
     tree = STRtree(geoms)
     pts = _cell_points(grid)
@@ -397,14 +408,20 @@ def main() -> int:
         edf = pd.read_parquet(src)
         if "wkt" not in edf.columns:
             continue
-        mask = polygon_join(edf, grid)
-        if mask is None:
+        frac = polygon_join(edf, grid)
+        if frac is None:
             continue
         m = float(rule.get("multiplier", 0.0))
-        mult = np.where(mask, np.minimum(mult, m), mult)
-        grid[f"x_{lid}"] = mask
-        print(f"  [exclude] {lid:<22} {mask.sum():>9,} cells "
-              f"({mask.mean():5.1%})  multiplier={m}")
+        # Blend toward the exclusion multiplier in proportion to coverage:
+        # 100% covered -> m, 0% -> untouched, linear between.
+        cell_mult = 1.0 - frac * (1.0 - m)
+        mult = np.minimum(mult, cell_mult)
+        flagged = frac >= float(rule.get("flag_at", 0.5))
+        grid[f"x_{lid}"] = flagged
+        grid[f"xf_{lid}"] = np.round(frac, 3)
+        print(f"  [exclude] {lid:<22} mean coverage {frac.mean():6.2%} | "
+              f">={rule.get('flag_at',0.5):.0%} in {flagged.sum():,} cells "
+              f"({flagged.mean():.1%})  multiplier={m}")
     total = total * mult
 
     # --- flags: surfaced, never folded into the score -----------------------
@@ -425,7 +442,12 @@ def main() -> int:
                       & (vals >= float(flag.get("threshold", 0)))) \
                     if vals is not None else None
             else:
-                fm = polygon_join(fdf, grid)
+                # polygon_join now returns coverage fraction, not a boolean.
+                # Without this threshold the flag count came out fractional
+                # (81,430.19 cells) and every partially-touched cell flagged.
+                cov = polygon_join(fdf, grid)
+                fm = (cov >= float(flag.get("threshold", 0.25))
+                      if cov is not None else None)
         elif "join_key" in fdf.columns and flag.get("field"):
             field = flag["field"]
             if field not in fdf.columns:

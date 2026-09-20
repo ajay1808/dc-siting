@@ -13,37 +13,71 @@
 <aside id="panel">
   <header>
     <h1>Siting Command</h1>
-    <p class="sub">Data center suitability · H3 r7 · CONUS</p>
+    <p class="sub">Data-center suitability · H3 r7 · CONUS</p>
   </header>
 
-  <section>
+  <nav class="tabs">
+    <button data-tab="score" class="on">Score</button>
+    <button data-tab="weights">Weights</button>
+    <button data-tab="cell">Cell</button>
+  </nav>
+
+  <!-- ── SCORE ─────────────────────────────────────────────── -->
+  <section data-panel="score">
     <label class="lbl">Weighting profile</label>
     <select id="profile"></select>
     <p id="profile-desc" class="desc"></p>
-  </section>
 
-  <section>
-    <label class="lbl">Score</label>
+    <label class="lbl mt">Score</label>
     <div id="ramp"></div>
-    <div class="ramp-ticks"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
-  </section>
+    <div class="ticks"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
 
-  <section>
-    <label class="lbl">Minimum score <b id="minval">0</b></label>
+    <label class="lbl mt">Minimum score <b id="minval">0</b></label>
     <input type="range" id="minscore" min="0" max="100" value="0">
+
+    <div id="calib" class="note"></div>
+    <div id="excl"></div>
   </section>
 
-  <section id="readout" class="hidden">
-    <label class="lbl">Selected cell</label>
-    <div class="score-big"><span id="cell-score">–</span><small>/100</small></div>
-    <div id="cell-factors"></div>
+  <!-- ── WEIGHTS ───────────────────────────────────────────── -->
+  <section data-panel="weights" hidden>
+    <p class="desc">
+      Adjust any weight to build your own methodology. Weights are
+      renormalised, so only their <em>ratios</em> matter. Click
+      <b>ⓘ</b> for the source behind a factor.
+    </p>
+    <div class="wbar">
+      <button id="reset">Reset to profile</button>
+      <span id="wsum"></span>
+    </div>
+    <div id="factors"></div>
+  </section>
+
+  <!-- ── CELL ──────────────────────────────────────────────── -->
+  <section data-panel="cell" hidden>
+    <div id="cell-empty" class="desc">Click a hexagon on the map.</div>
+    <div id="cell-body" hidden>
+      <div class="score-big"><span id="cell-score">–</span><small>/100</small></div>
+      <div id="cell-geo"></div>
+      <div id="cell-flags"></div>
+      <label class="lbl mt">Factor breakdown</label>
+      <div id="cell-factors"></div>
+      <label class="lbl mt">Export</label>
+      <div class="wbar">
+        <button id="copy-h3">Copy H3 index</button>
+        <button id="dl-geojson">Download GeoJSON</button>
+      </div>
+      <p class="desc" id="h3note"></p>
+    </div>
   </section>
 
   <footer>
-    <div id="status">loading tiles…</div>
+    <div id="status">loading…</div>
     <p class="warn" id="provisional"></p>
   </footer>
 </aside>
+
+<div id="info" hidden><div id="info-card"></div></div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/pmtiles@4.5.0/dist/pmtiles.js"></script>

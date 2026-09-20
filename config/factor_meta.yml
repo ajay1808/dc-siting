@@ -1,0 +1,159 @@
+# Per-factor provenance and plain-English meaning, surfaced in the UI so a
+# score is never an unexplained number. One entry per factor in scoring.yml.
+
+grid_access:
+  source: HIFLD Open (transmission) + OpenStreetMap (substations)
+  source_url: https://hifld-geoplatform.opendata.arcgis.com/
+  detail: 52,244 transmission lines, 77,748 substations
+  means: >
+    Distance to transmission lines and substations, weighted by voltage. A
+    500 kV line counts far more than a 69 kV one. This is the single biggest
+    constraint on whether a large load can connect at all.
+  caveat: >
+    HIFLD's national substation layer is no longer public, so substations come
+    from OpenStreetMap; 78% carry a voltage tag.
+
+grid_headroom:
+  source: EIA-860M, Planned generation sheet
+  source_url: https://www.eia.gov/electricity/data/eia860m/
+  detail: 1,582 planned generator additions
+  means: >
+    Generation capacity already planned nearby. Proxies whether new load can
+    actually be energised this decade rather than waiting years in a queue.
+  caveat: >
+    SUBSTITUTE. The real measure is the interconnection queue (LBNL "Queued
+    Up"), which blocks scripted access. Planned additions understate queue
+    contention.
+
+power_cost:
+  source: EIA v2 API, retail sales (industrial sector)
+  source_url: https://www.eia.gov/opendata/
+  detail: 2025 industrial price, 49 states
+  means: >
+    Industrial electricity price in cents/kWh. Power is the dominant operating
+    cost of a data center, so this compounds over the life of the facility.
+  caveat: >
+    Joined at STATE level. Utility service territory polygons are in the
+    restricted HIFLD set, so intrastate spread is not captured.
+
+cooling_efficiency:
+  source: NOAA NCEI 1991-2020 Climate Normals
+  source_url: https://www.ncei.noaa.gov/access/us-climate-normals/
+  detail: 7,007 CONUS weather stations
+  means: >
+    Annual cooling degree days, interpolated between stations. Cooler climates
+    allow more free cooling, which lowers both PUE and water consumption.
+  caveat: >
+    SUBSTITUTE for ASHRAE design wet-bulb, which is paywalled. CDD ignores
+    humidity, so a dry and a humid site with equal CDD score the same when
+    they should not.
+
+network_latency:
+  source: PeeringDB
+  source_url: https://www.peeringdb.com/
+  detail: 1,353 US interconnection facilities
+  means: >
+    Proximity to interconnection facilities, weighted by how many networks
+    are present. Matters enormously for edge and inference workloads, barely
+    at all for training clusters.
+
+water_availability:
+  source: WRI Aqueduct 4.0 + EPA wastewater facilities
+  source_url: https://www.wri.org/data/aqueduct-global-maps-40-data
+  detail: 4,267 CONUS hydrological basins
+  means: >
+    Baseline water stress in the containing basin. Evaporative cooling needs
+    water, and a water-stressed basin means permitting risk and local
+    opposition regardless of what the utility will sell you.
+
+buildability:
+  source: USGS 3DEP elevation + NLCD 2021 land cover
+  source_url: https://www.mrlc.gov/data
+  detail: CONUS DEM plus 30 m land cover, areal fractions
+  means: >
+    Terrain slope and land cover combined. Scored on development cost and
+    permitting risk: already-serviced open land is best, high-intensity urban
+    is worst (no room), cropland scores below pasture because prime-farmland
+    conversion is heavily contested, and wetlands are excluded outright.
+  caveat: >
+    Slope is sampled at ~1.4 km, so it screens out mountains but says nothing
+    about whether a specific parcel is flat.
+
+policy_climate:
+  source: LLM research pass, every claim source-linked
+  source_url: https://github.com/ajay1808/dc-siting/tree/main/data/raw/policy
+  detail: all 49 CONUS states, 5.1 of 6 fields cited on average
+  means: >
+    Tax exemptions, abatements, permitting speed, active moratoria, who pays
+    for interconnection upgrades, and cooling-water restrictions.
+  caveat: >
+    Assembled by an LLM with mandatory citations; any field without a real
+    source URL is dropped rather than guessed. Verify before relying on it
+    for a decision.
+
+hazard:
+  source: FEMA National Risk Index
+  source_url: https://hazards.fema.gov/nri/
+  detail: 3,232 counties, 9 weighted hazard types
+  means: >
+    Earthquake, flood, wildfire, hurricane, landslide, ice storm, heat wave
+    and tornado risk. Siting-relevant hazards (quake, flood, fire) are
+    weighted above design-solvable ones (tornado, hail) -- tornado alley
+    hosts plenty of campuses.
+
+generation_proximity:
+  source: EIA-860M, Operating sheet
+  source_url: https://www.eia.gov/electricity/data/eia860m/
+  detail: 14,433 operating power plants
+  means: >
+    Installed generating capacity nearby. Overlaps grid access by design, but
+    a plant next door is not the same thing as a high-voltage line.
+
+market_maturity:
+  source: OpenStreetMap
+  source_url: https://www.openstreetmap.org/
+  detail: 1,764 tagged US data centers
+  means: >
+    Existing data center density. Scored as an optimum rather than
+    more-is-better: some neighbours prove the fundamentals work, too many
+    mean you are competing for the same substation.
+
+gas_access:
+  source: EIA natural gas pipelines
+  source_url: https://atlas.eia.gov/
+  detail: 33,806 pipeline segments, sampled every 4 km
+  means: >
+    Distance to gas transmission. Increasingly decisive because on-site or
+    bridge generation is how large loads get energised ahead of a grid upgrade.
+
+clean_power_potential:
+  source: NLR (formerly NREL) solar resource API
+  source_url: https://developer.nlr.gov/docs/solar/nsrdb/
+  detail: sampled on a coarse grid, interpolated
+  means: >
+    Annual solar irradiance. Proxies how cheaply on-site or nearby renewable
+    generation can be added to meet a clean-energy commitment.
+  caveat: >
+    Solar only. Wind resource is too spatially spiky to survive this
+    interpolation and uses a separate, heavier API.
+
+network_infrastructure:
+  source: Census ACS 2023, table B28002
+  source_url: https://www.census.gov/programs-surveys/acs
+  detail: 3,222 counties
+  means: >
+    Household internet subscription rate, as a proxy for whether real network
+    infrastructure reaches the area.
+  caveat: >
+    SUBSTITUTE. FCC's Broadband Data Collection returns 403/405 on every
+    public endpoint. ACS measures adoption, not availability, so it
+    understates areas with good infrastructure and low uptake.
+
+logistics:
+  source: Census TIGER 2024 primary roads
+  source_url: https://www.census.gov/geographies/mapping-files/time-series/geo/tiger-line-file.html
+  detail: interstates and primary arterials, weighted by class
+  means: >
+    Distance to interstate and primary highway. Transformers, chillers and
+    gensets move by oversize road freight, and construction traffic has to
+    get there too.

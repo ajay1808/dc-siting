@@ -1,0 +1,22 @@
+calibrated_weights:
+  grid_access: 0.1407
+  grid_headroom: 0.1676
+  power_cost: 0.1575
+  cooling_efficiency: 0.028
+  network_latency: 0.015
+  water_availability: 0.031
+  buildability: 0.1439
+  policy_climate: 0.087
+  hazard: 0.0308
+  generation_proximity: 0.0543
+  market_maturity: 0.0478
+  gas_access: 0.0287
+  clean_power_potential: 0.0196
+  network_infrastructure: 0.0245
+  logistics: 0.0236
+fit:
+  positives_mean: 65.89
+  negatives_mean: 30.06
+  n_positive: 28
+  n_negative: 15
+  prior_strength: 0.45

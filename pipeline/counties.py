@@ -15,6 +15,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yaml
 from shapely.geometry import shape
@@ -60,7 +61,7 @@ def main() -> int:
                 polys.append(rings)
         return {"type": "MultiPolygon", "coordinates": polys} if polys else None
 
-    geoms, fips = [], []
+    geoms, fips, cname = [], [], []
     skipped = 0
     for f in feats:
         code = str(f["id"]).zfill(5)
@@ -80,6 +81,7 @@ def main() -> int:
             continue
         geoms.append(g)
         fips.append(code)
+        cname.append(f["props"].get("name"))
     if skipped:
         print(f"  skipped {skipped} degenerate county geometries")
     print(f"  counties (CONUS): {len(geoms)}")
@@ -97,6 +99,38 @@ def main() -> int:
             assigned[i] = fips[j]
 
     grid["county_fips"] = assigned
+
+    # A 5 km2 hex frequently straddles a county line, and the UI should say so
+    # rather than silently picking the centroid's county. Test the 6 vertices
+    # too and keep the full set.
+    import h3 as _h3
+    # Built in the same pass as `fips`. Zipping a separately-filtered list here
+    # desynchronised the two by the number of skipped degenerate geometries,
+    # which silently shifted EVERY county name by one.
+    names = dict(zip(fips, cname))
+    vert_pts, owner = [], []
+    for i, cell in enumerate(grid["h3"]):
+        for vlat, vlng in _h3.cell_to_boundary(cell):
+            vert_pts.append(Point(vlng, vlat))
+            owner.append(i)
+    print(f"  testing {len(vert_pts):,} cell vertices for county overlap ...")
+    vi, vj = tree.query(vert_pts, predicate="within")
+    extra = {}
+    owner = np.asarray(owner)
+    for a, b in zip(vi, vj):
+        cell_i = owner[a]
+        extra.setdefault(cell_i, set()).add(fips[b])
+    allc = []
+    for i, base in enumerate(assigned):
+        st = set(extra.get(i, ()))
+        if base:
+            st.add(base)
+        allc.append(",".join(sorted(st)) if st else None)
+    grid["county_all"] = allc
+    grid["county_name"] = [names.get(c) if c else None for c in assigned]
+    grid["n_counties"] = [len(a.split(",")) if a else 0 for a in allc]
+    print(f"  cells spanning >1 county: {(grid['n_counties'] > 1).mean():.1%}")
+
     hit = grid["county_fips"].notna().mean()
     grid.to_parquet(gridfile, index=False, compression="zstd")
     print(f"  matched {hit:.1%} of cells to a county")

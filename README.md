@@ -12,9 +12,9 @@ suitability, and explains *why* each cell scored what it did.
 |---|---|
 | Grid | H3 resolution 7 — **1,467,441 CONUS cells** (~5.16 km² each) |
 | Layers declared | 29 (all V1 = easy + medium tier) |
-| Layers ingested | 19 |
-| Factors live | 13 of 15 (~92% of weight) |
-| Tile payload | 66.0 MB across 3 archives, largest 45 MB |
+| Layers ingested | 22 |
+| Factors live | **15 of 15** |
+| Tile payload | 71.7 MB across 3 archives, largest 48 MB |
 
 Scores are labelled PROVISIONAL until cooling, water, land and policy land.
 The three heaviest factors (grid access, interconnection headroom, power
@@ -130,3 +130,30 @@ different site from "all cropland".
 
 The published site makes **no API calls** — every key is build-time only.
 See [docs/SECURITY.md](docs/SECURITY.md); run `make audit` before publishing.
+
+
+## Calibration
+
+Weights are not hand-waved. `pipeline/calibrate.py` fits them against
+`config/case_studies.yml`: **28 operating campuses** (Ashburn, Council Bluffs,
+New Albany, Abilene, The Dalles …) that should score high, and **15 known-bad
+sites** that should not.
+
+The negatives do the real work. With positives alone an optimiser just
+inflates whatever they happen to score well on, so the set deliberately spans
+four failure modes: dense urban (great infrastructure, no room — the Manhattan
+case), protected land, remote-no-grid, and hazard/terrain.
+
+Guard rails, because 43 labelled points against 15 factors will overfit:
+weights are non-negative, sum to 1, **floored at 0.015** so a real factor
+cannot be zeroed, and regularised toward the hand-set prior.
+
+Result: separation between good and bad sites improved 29.4 → 35.8, the worst
+positive went 0.0 → 49.1, and the best negative fell 68.0 → 62.6.
+
+Positives converge around 66 against a target of 80. The model genuinely
+cannot reach 80 for every real campus — several sit in mediocre cells on some
+factors — and the target was left honest rather than moved to flatter the fit.
+
+Run `python pipeline/calibrate.py` to see the per-case table without changing
+anything; add `--apply` to write the weights.

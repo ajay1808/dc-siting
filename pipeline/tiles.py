@@ -22,7 +22,8 @@ OUT = ROOT / "data" / "out"
 TILES = ROOT / "tiles"
 
 
-def aggregate(df: pd.DataFrame, factor_cols: list[str], parent_res: int) -> pd.DataFrame:
+def aggregate(df: pd.DataFrame, factor_cols: list[str], parent_res: int,
+              flag_cols: list[str] = (), excl_cols: list[str] = ()) -> pd.DataFrame:
     """Roll res-7 cells up to a coarser H3 parent, averaging scores.
 
     Low zooms must show a CONTINUOUS surface. Letting tippecanoe thin 1.5M
@@ -34,13 +35,20 @@ def aggregate(df: pd.DataFrame, factor_cols: list[str], parent_res: int) -> pd.D
     d = df.copy()
     d["parent"] = [h3.cell_to_parent(c, parent_res) for c in d["h3"]]
     agg = {"score": "mean", "factors_used": "max", "state_fips": "first"}
+    if "county_names" in d.columns:
+        agg["county_names"] = "first"
     for c in factor_cols:
         agg[c] = "mean"
+    # A parent cell inherits a flag if ANY child carries it -- the coarse view
+    # should not quietly drop a constraint.
+    for c in list(flag_cols) + list(excl_cols):
+        agg[c] = "max"
     out = d.groupby("parent", as_index=False).agg(agg)
     return out.rename(columns={"parent": "h3"})
 
 
-def features(df: pd.DataFrame, factor_cols: list[str]):
+def features(df: pd.DataFrame, factor_cols: list[str],
+             flag_cols: list[str] = (), excl_cols: list[str] = ()):
     for row in df.itertuples(index=False):
         d = row._asdict()
         boundary = h3.cell_to_boundary(d["h3"])
@@ -53,10 +61,21 @@ def features(df: pd.DataFrame, factor_cols: list[str]):
         # archive size. 0-100 is finer than the model's real precision anyway.
         props = {"h3": d["h3"], "score": int(round(d["score"])),
                  "st": d["state_fips"], "nf": int(d["factors_used"])}
+        # Human-readable geography. MVT dictionary-encodes repeated strings per
+        # tile, so ~3,100 distinct county names cost far less than they look.
+        cn = d.get("county_names")
+        if cn:
+            props["cnames"] = cn
         for c in factor_cols:
             v = d.get(c)
             if v is not None and v == v:
                 props[c.replace("f_", "")] = int(round(float(v) * 100))
+        for c in flag_cols:
+            if bool(d.get(c)):
+                props["fl_" + c.replace("flag_", "")] = 1
+        for c in excl_cols:
+            if bool(d.get(c)):
+                props[c] = 1
         yield {"type": "Feature",
                "geometry": {"type": "Polygon", "coordinates": [ring]},
                "properties": props}
@@ -75,9 +94,25 @@ def main() -> int:
         return 1
 
     df = pd.read_parquet(src)
-    df = df[df["score"].notna()]
+    df = df[df["score"].notna()].copy()
     factor_cols = [c for c in df.columns if c.startswith("f_")]
-    print(f"tiling {len(df):,} cells, {len(factor_cols)} factor columns")
+    flag_cols = [c for c in df.columns if c.startswith("flag_")]
+    excl_cols = [c for c in df.columns if c.startswith("x_")]
+
+    # Resolve every county a hex touches into readable names for the UI.
+    if "county_all" in df.columns:
+        lookup = (df.dropna(subset=["county_fips", "county_name"])
+                    .drop_duplicates("county_fips")
+                    .set_index("county_fips")["county_name"].to_dict())
+        def names(cell_all):
+            if not cell_all:
+                return None
+            out = [lookup.get(f) for f in str(cell_all).split(",")]
+            return "|".join(sorted({n for n in out if n})) or None
+        df["county_names"] = df["county_all"].map(names)
+
+    print(f"tiling {len(df):,} cells, {len(factor_cols)} factors, "
+          f"{len(flag_cols)} flags, {len(excl_cols)} exclusions")
 
     TILES.mkdir(parents=True, exist_ok=True)
 
@@ -85,7 +120,8 @@ def main() -> int:
     TIERS = [(4, 3, 5), (6, 6, 8), (res, 9, res + 2)]
     total_mb = 0.0
     for tier_res, zmin, zmax in TIERS:
-        tdf = df if tier_res == res else aggregate(df, factor_cols, tier_res)
+        tdf = (df if tier_res == res
+               else aggregate(df, factor_cols, tier_res, flag_cols, excl_cols))
         dest = TILES / f"score_r{tier_res}.pmtiles"
         cmd = ["tippecanoe", "-o", str(dest), "--force", "-l", "score",
                f"-Z{zmin}", f"-z{zmax}",
@@ -96,7 +132,7 @@ def main() -> int:
 
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
         try:
-            for feat in features(tdf, factor_cols):
+            for feat in features(tdf, factor_cols, flag_cols, excl_cols):
                 proc.stdin.write(json.dumps(feat, separators=(",", ":")) + "\n")
             proc.stdin.close()
         except BrokenPipeError:
