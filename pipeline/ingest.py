@@ -908,6 +908,229 @@ def fetch_solar_wind_potential() -> pd.DataFrame:
     return df
 
 
+EIA860M_URL = ("https://www.eia.gov/electricity/data/eia860m/xls/"
+               "july_generator2026.xlsx")
+
+
+def _eia860m_sheet(sheet: str) -> pd.DataFrame:
+    """Download EIA-860M once and return one sheet, cached on disk.
+
+    The EIA v2 JSON API carries generator capacity but no coordinates, so the
+    860M spreadsheet is the only free source that gives capacity AND lat/lng
+    together. Note EIA publishes a stub file for the newest month or two
+    before the real release lands; check file size if bumping the URL.
+    """
+    RAW.mkdir(parents=True, exist_ok=True)
+    cache = RAW / "eia860m.xlsx"
+    if not cache.exists() or cache.stat().st_size < 1_000_000:
+        print(f"    downloading {EIA860M_URL}")
+        req = urllib.request.Request(EIA860M_URL, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=300) as r:
+            cache.write_bytes(r.read())
+    df = pd.read_excel(cache, sheet_name=sheet, skiprows=2, engine="openpyxl")
+    df = df.rename(columns={"Latitude": "lat", "Longitude": "lng"})
+    df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
+    df["lng"] = pd.to_numeric(df["lng"], errors="coerce")
+    df = df.dropna(subset=["lat", "lng"])
+    return df[df.lat.between(24, 50) & df.lng.between(-125, -66)].reset_index(drop=True)
+
+
+@fetcher("power_plants")
+def fetch_power_plants() -> pd.DataFrame:
+    df = _eia860m_sheet("Operating")
+    cap = pd.to_numeric(df.get("Nameplate Capacity (MW)"), errors="coerce").fillna(0)
+    out = pd.DataFrame({
+        "lat": df["lat"], "lng": df["lng"], "capacity_mw": cap,
+        "plant_name": df.get("Plant Name"), "plant_id": df.get("Plant ID"),
+        "technology": df.get("Technology"), "state": df.get("Plant State"),
+        "ba": df.get("Balancing Authority Code"),
+    })
+    # 860M is generator-level; collapse to plants so capacity is not double counted
+    # by the radius sum and a 12-unit site is not 12 nearest neighbours.
+    agg = out.groupby("plant_id", as_index=False).agg(
+        lat=("lat", "first"), lng=("lng", "first"),
+        capacity_mw=("capacity_mw", "sum"), plant_name=("plant_name", "first"),
+        technology=("technology", "first"), state=("state", "first"), ba=("ba", "first"))
+    return agg
+
+
+@fetcher("interconnection_queue")
+def fetch_interconnection_queue() -> pd.DataFrame:
+    """Planned generator additions from EIA-860M.
+
+    The registry's primary source (LBNL 'Queued Up') returns 403 to scripted
+    clients. EIA-860M's Planned sheet is the closest free substitute: it is
+    generation that has cleared enough process to have a location and an
+    in-service date, so it indexes where new capacity is actually arriving.
+    It is NOT the full interconnection queue and will understate contention.
+    """
+    df = _eia860m_sheet("Planned")
+    cap = pd.to_numeric(df.get("Nameplate Capacity (MW)"), errors="coerce").fillna(0)
+    out = pd.DataFrame({
+        "lat": df["lat"], "lng": df["lng"], "capacity_mw": cap,
+        "plant_name": df.get("Plant Name"), "plant_id": df.get("Plant ID"),
+        "technology": df.get("Technology"), "state": df.get("Plant State"),
+        "q_year": pd.to_numeric(df.get("Operating Year"), errors="coerce"),
+    })
+    return out.groupby("plant_id", as_index=False).agg(
+        lat=("lat", "first"), lng=("lng", "first"),
+        capacity_mw=("capacity_mw", "sum"), plant_name=("plant_name", "first"),
+        technology=("technology", "first"), state=("state", "first"),
+        q_year=("q_year", "min"))
+
+
+@fetcher("retail_power_price")
+def fetch_retail_power_price() -> pd.DataFrame:
+    """Industrial retail electricity price by state, latest annual (cents/kWh).
+
+    EIA-861 resolves to utility, but utility service territory polygons are
+    part of the restricted HIFLD set, so V1 joins at state level. That is
+    coarse -- intrastate spread is real -- but it is honest and it is free.
+    """
+    key = _env("EIA_API_KEY")
+    if not key:
+        raise RuntimeError("EIA_API_KEY not set")
+    d = _get_json("https://api.eia.gov/v2/electricity/retail-sales/data/", {
+        "api_key": key, "frequency": "annual", "data[]": "price",
+        "facets[sectorid][]": "IND", "sort[0][column]": "period",
+        "sort[0][direction]": "desc", "length": "5000"})
+    rows = d["response"]["data"]
+    df = pd.DataFrame(rows)
+    df["price"] = pd.to_numeric(df["price"], errors="coerce")
+    df = df.dropna(subset=["price"])
+    latest = df["period"].max()
+    df = df[df["period"] == latest]
+    df = df[df["stateid"].str.len() == 2]
+
+    fips = _state_fips()
+    df["join_key"] = df["stateid"].map(fips)
+    df = df.dropna(subset=["join_key"])
+    print(f"    EIA retail industrial price, period {latest}, {len(df)} states")
+    return df[["join_key", "price", "stateid"]].reset_index(drop=True)
+
+
+@fetcher("county_demographics")
+def fetch_county_demographics() -> pd.DataFrame:
+    """ACS 5-year county poverty rate and median household income.
+
+    Poverty rate is carried for EJ disclosure, not as a positive score input.
+    """
+    key = _env("CENSUS_API_KEY")
+    if not key:
+        raise RuntimeError("CENSUS_API_KEY not set")
+    url = "https://api.census.gov/data/2023/acs/acs5"
+    d = _get_json(url, {"get": "NAME,B17001_002E,B17001_001E,B19013_001E,B01003_001E",
+                        "for": "county:*", "in": "state:*", "key": key})
+    hdr, *rows = d
+    df = pd.DataFrame(rows, columns=hdr)
+    for c in ["B17001_002E", "B17001_001E", "B19013_001E", "B01003_001E"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["join_key"] = df["state"].str.zfill(2) + df["county"].str.zfill(3)
+    df["pct_poverty"] = (df["B17001_002E"] / df["B17001_001E"] * 100).round(2)
+    out = df[["join_key", "pct_poverty", "NAME"]].copy()
+    out["median_income"] = df["B19013_001E"].where(df["B19013_001E"] > 0)
+    out["population"] = df["B01003_001E"]
+    out = out.dropna(subset=["pct_poverty"])
+    print(f"    ACS 2023: {len(out)} counties")
+    return out.reset_index(drop=True)
+
+
+def _state_fips() -> dict:
+    return {
+        "AL":"01","AZ":"04","AR":"05","CA":"06","CO":"08","CT":"09","DE":"10",
+        "DC":"11","FL":"12","GA":"13","ID":"16","IL":"17","IN":"18","IA":"19",
+        "KS":"20","KY":"21","LA":"22","ME":"23","MD":"24","MA":"25","MI":"26",
+        "MN":"27","MS":"28","MO":"29","MT":"30","NE":"31","NV":"32","NH":"33",
+        "NJ":"34","NM":"35","NY":"36","NC":"37","ND":"38","OH":"39","OK":"40",
+        "OR":"41","PA":"42","RI":"44","SC":"45","SD":"46","TN":"47","TX":"48",
+        "UT":"49","VT":"50","VA":"51","WA":"53","WV":"54","WI":"55","WY":"56",
+    }
+
+
+
+@fetcher("gas_pipelines")
+def fetch_gas_pipelines() -> pd.DataFrame:
+    """EIA natural gas interstate/intrastate transmission pipelines.
+
+    NOTE: several ArcGIS services share this layer's name but hold only ONE
+    state's data -- the first source tried here was Pennsylvania-only despite
+    the national name. This one is national (~33k features, lng -151..-67).
+    Always check extent before swapping it; run() warns on regional layers.
+
+    EIA pipeline geometry averages ~3 vertices per feature, so raw vertices
+    would put sample points hundreds of km apart. Densified to 4 km.
+    """
+    BASE = ("https://services.arcgis.com/RCbhhjhpPZMzteoU/arcgis/rest/services"
+            "/NaturalGas_InterIntrastate_Pipelines_US_EIA/FeatureServer/0")
+    rows = []
+    for f in _arcgis_paged(BASE, out_fields="TYPEPIPE,Operator"):
+        p = f.get("properties", {}) or {}
+        for lng, lat in _line_vertices(f.get("geometry"), densify_km=4.0):
+            rows.append({"lat": lat, "lng": lng, "typepipe": p.get("TYPEPIPE"),
+                         "operator": p.get("Operator")})
+    df = pd.DataFrame(rows)
+    return df[df.lat.between(24, 50) & df.lng.between(-125, -66)].reset_index(drop=True)
+
+
+NOAA_NORMALS_URL = ("https://www.ncei.noaa.gov/data/normals-annualseasonal/1991-2020/"
+                    "archive/us-climate-normals_1991-2020_v1.0.1_annualseasonal_"
+                    "multivariate_by-station_c20230404.tar.gz")
+
+
+@fetcher("cooling_climate")
+def fetch_cooling_climate() -> pd.DataFrame:
+    """NOAA 1991-2020 annual cooling degree days, by station.
+
+    SUBSTITUTION: the registry asks for design wet-bulb, the right variable for
+    sizing evaporative cooling, but ASHRAE design conditions are paywalled.
+    Annual CDD (base 65F) is the closest free proxy. It tracks cooling energy
+    well but does NOT capture humidity, so arid and humid places with equal CDD
+    score the same here when they should not.
+
+    One 54 MB archive rather than 15,616 per-station requests.
+    """
+    import csv as _csv
+    import io as _io
+    import tarfile
+
+    RAW.mkdir(parents=True, exist_ok=True)
+    cache = RAW / "noaa_normals_annualseasonal.tar.gz"
+    if not cache.exists():
+        print("    downloading NOAA normals archive (~54 MB)")
+        req = urllib.request.Request(NOAA_NORMALS_URL, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=900) as r:
+            cache.write_bytes(r.read())
+
+    rows = []
+    with tarfile.open(cache, "r:gz") as tf:
+        members = [m for m in tf.getnames() if m.endswith(".csv")]
+        for i, name in enumerate(members):
+            try:
+                txt = tf.extractfile(name).read().decode("utf8", "replace")
+                rec = next(_csv.DictReader(_io.StringIO(txt)), None)
+            except Exception:
+                continue
+            if not rec:
+                continue
+            try:
+                lat = float(rec.get("LATITUDE", ""))
+                lng = float(rec.get("LONGITUDE", ""))
+                cdd = float(rec.get("ANN-CLDD-NORMAL", ""))
+            except (TypeError, ValueError):
+                continue
+            if not (24 <= lat <= 50 and -125 <= lng <= -66) or cdd < 0:
+                continue
+            try:
+                tavg = float(rec.get("ANN-TAVG-NORMAL", ""))
+            except (TypeError, ValueError):
+                tavg = None
+            rows.append({"lat": lat, "lng": lng, "cdd65": cdd, "tavg": tavg,
+                         "station": rec.get("STATION"), "name": rec.get("NAME")})
+            if (i + 1) % 4000 == 0:
+                print(f"    parsed {i+1}/{len(members)} stations -> {len(rows)} CONUS")
+    return pd.DataFrame(rows)
+
+
 # ---------------------------------------------------------------------------
 # NETWORK
 # ---------------------------------------------------------------------------
@@ -1021,6 +1244,18 @@ def _check_coverage(lid: str, df: pd.DataFrame) -> None:
               f"({len(cells)} cells, {lng_span:.1f} deg). Check the source URL.")
 
 
+def audit_registry() -> list[str]:
+    """Registry layers that feed a factor but have no fetcher.
+
+    Added after six fetchers were silently deleted by an index-slice edit to
+    this file. The stale parquets in data/interim kept scoring working, so
+    nothing failed -- the pipeline had simply stopped being reproducible.
+    """
+    reg = yaml.safe_load((ROOT / "sources" / "registry.yml").read_text())
+    need = {l["id"] for l in reg["layers"] if l.get("scoring")}
+    return sorted(need - set(FETCHERS))
+
+
 def run(layer_ids: list[str]) -> int:
     reg = yaml.safe_load((ROOT / "sources" / "registry.yml").read_text())
     known = {l["id"]: l for l in reg["layers"]}
@@ -1057,5 +1292,8 @@ def run(layer_ids: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    gaps = audit_registry()
+    if gaps:
+        print(f"[registry] scoring layers with no fetcher: {gaps}")
     args = sys.argv[1:] or list(FETCHERS)
     sys.exit(run(args))
