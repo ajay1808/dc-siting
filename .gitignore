@@ -9,4 +9,5 @@ data/raw/
 data/interim/
 data/out/
 tiles/*.pmtiles
-web/tiles/
+
+# web/tiles IS committed: GitHub Pages serves it and CI does not rebuild it.

@@ -506,6 +506,275 @@ def fetch_policy_climate() -> pd.DataFrame:
     return df
 
 
+
+# NLCD palette index -> NLCD class code. MRLC's WMS returns a PALETTED image,
+# not raw class values, so the index must be translated. The palette follows
+# the canonical NLCD legend order (verified against the published RGB values).
+NLCD_INDEX = {1:11, 2:12, 3:21, 4:22, 5:23, 6:24, 7:31, 8:32, 9:41, 10:42,
+              11:43, 12:51, 13:52, 14:71, 15:72, 16:73, 17:74, 18:81, 19:82,
+              20:90, 21:95}
+
+# What land cover actually means for siting a large data center campus.
+#
+# The naive reading is "developed = good, undeveloped = bad". That is wrong in
+# both directions, so this scores on development COST and PERMITTING RISK:
+#
+#  - Developed high-intensity is the WORST developed class, not the best:
+#    parcels are small and expensive and there is no room for a campus.
+#  - Developed low / open space is the best case: roads, power and fiber are
+#    already there, the land is already disturbed, and parcels are big enough.
+#  - Cultivated crops LOOK ideal (flat, cleared, cheap) but prime-farmland
+#    conversion is the most locally contested change of use there is, so it is
+#    scored well below pasture rather than alongside it.
+#  - Forest carries clearing cost, stormwater and erosion permitting, and
+#    growing ESG/carbon exposure.
+#  - Wetlands are NOT a low score, they are an exclusion: Clean Water Act
+#    section 404 permitting through USACE makes a large pad impractical.
+NLCD_SUITABILITY = {
+    11: 0.00,  # open water                    - exclusion
+    12: 0.00,  # perennial ice / snow          - exclusion
+    90: 0.00,  # woody wetlands                - CWA 404, exclusion
+    95: 0.00,  # emergent herbaceous wetlands  - CWA 404, exclusion
+    21: 0.95,  # developed, open space         - best: serviced and disturbed
+    22: 0.90,  # developed, low intensity
+    23: 0.55,  # developed, medium intensity   - infill only
+    24: 0.20,  # developed, high intensity     - no room, expensive
+    31: 0.90,  # barren land                   - cheap, nothing to clear
+    52: 0.80,  # shrub / scrub
+    71: 0.80,  # grassland / herbaceous
+    81: 0.75,  # pasture / hay                 - already disturbed
+    82: 0.50,  # cultivated crops              - farmland-conversion opposition
+    41: 0.35,  # deciduous forest              - clearing + permitting + ESG
+    42: 0.30,  # evergreen forest
+    43: 0.32,  # mixed forest
+    51: 0.80, 32: 0.85, 72: 0.75, 73: 0.70, 74: 0.70,   # AK classes, unused L48
+}
+WETLAND_CLASSES = {11, 12, 90, 95}
+
+
+@fetcher("land_cover")
+def fetch_land_cover() -> pd.DataFrame:
+    """NLCD 2021 land cover -> per-cell suitability and wetland fraction.
+
+    Fetched via MRLC's WMS in tiles at ~500 m, translated from palette index to
+    NLCD class, scored per pixel, then BLOCK-AVERAGED to roughly the analysis
+    cell size. Averaging matters: a 5 km2 hex is heterogeneous, and "mostly
+    cropland with 15% wetland" is a materially different site from "all
+    cropland". Taking the single class under the centroid would throw that away.
+
+    Writes two rasters:
+      land_cover.tif          mean suitability 0-1  (buildability factor)
+      land_cover_wetland.tif  wetland+water fraction (exclusion)
+    """
+    import io as _io
+    import numpy as _np
+    import rasterio as _rio
+    from rasterio.transform import from_origin
+
+    RES = 0.005                      # ~500 m
+    W, S, E, N = -125.0, 24.0, -66.0, 50.0
+    NX, NY = 4, 2                    # GeoServer caps a single GetMap request
+    full_w = int((E - W) / RES)
+    full_h = int((N - S) / RES)
+    suit = _np.full((full_h, full_w), _np.nan, dtype="float32")
+    wet = _np.full((full_h, full_w), _np.nan, dtype="float32")
+
+    lut_s = _np.full(256, _np.nan, dtype="float32")
+    lut_w = _np.full(256, _np.nan, dtype="float32")
+    for idx, cls in NLCD_INDEX.items():
+        lut_s[idx] = NLCD_SUITABILITY.get(cls, _np.nan)
+        lut_w[idx] = 1.0 if cls in WETLAND_CLASSES else 0.0
+
+    for ix in range(NX):
+        for iy in range(NY):
+            x0 = W + (E - W) * ix / NX
+            x1 = W + (E - W) * (ix + 1) / NX
+            y1 = N - (N - S) * iy / NY
+            y0 = N - (N - S) * (iy + 1) / NY
+            px = int((x1 - x0) / RES)
+            py = int((y1 - y0) / RES)
+            q = {"service": "WMS", "version": "1.1.1", "request": "GetMap",
+                 "layers": "NLCD_2021_Land_Cover_L48", "srs": "EPSG:4326",
+                 "bbox": f"{x0},{y0},{x1},{y1}", "width": str(px),
+                 "height": str(py), "format": "image/geotiff"}
+            url = ("https://www.mrlc.gov/geoserver/mrlc_display/wms?"
+                   + urllib.parse.urlencode(q))
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=900) as r:
+                blob = r.read()
+            with _rio.open(_io.BytesIO(blob)) as ds:
+                arr = ds.read(1)
+            cx = int((x0 - W) / RES)
+            cy = int((N - y1) / RES)
+            suit[cy:cy + arr.shape[0], cx:cx + arr.shape[1]] = lut_s[arr]
+            wet[cy:cy + arr.shape[0], cx:cx + arr.shape[1]] = lut_w[arr]
+            print(f"    tile {ix},{iy}: {arr.shape[1]}x{arr.shape[0]}")
+            time.sleep(1)
+
+    # Block-average 500 m -> ~2 km so a centroid sample reads an areal mean.
+    K = 4
+    h2, w2 = full_h // K, full_w // K
+    def block_mean(a):
+        b = a[:h2 * K, :w2 * K].reshape(h2, K, w2, K)
+        return _np.nanmean(_np.nanmean(b, axis=3), axis=1)
+    suit_c = block_mean(suit)
+    wet_c = block_mean(wet)
+
+    prof = dict(driver="GTiff", height=h2, width=w2, count=1, dtype="float32",
+                crs="EPSG:4326", transform=from_origin(W, N, RES * K, RES * K),
+                nodata=_np.nan, compress="deflate")
+    for name, arr in (("land_cover", suit_c), ("land_cover_wetland", wet_c)):
+        with _rio.open(INTERIM / f"{name}.tif", "w", **prof) as dst:
+            dst.write(arr.astype("float32"), 1)
+    print(f"    mean suitability {_np.nanmean(suit_c):.3f} | "
+          f"cells >50% wetland/water: {_np.nanmean(wet_c > 0.5):.2%}")
+    return pd.DataFrame()
+
+
+
+@fetcher("rail_highway")
+def fetch_rail_highway() -> pd.DataFrame:
+    """Interstate and primary highway access, from Census TIGER.
+
+    Deliberately NOT the full 302k-segment rail network: for a data center the
+    binding logistics constraint is heavy-haul road access for transformers,
+    gensets and chillers, plus construction traffic. TIGER's primaryroads layer
+    is one 38 MB national file covering interstates and primary arterials,
+    which is the relevant subset.
+    """
+    import subprocess
+    import zipfile
+
+    from shapely.geometry import shape as _shape
+
+    RAW.mkdir(parents=True, exist_ok=True)
+    z = RAW / "tl_2024_us_primaryroads.zip"
+    if not z.exists() or z.stat().st_size < 1_000_000:
+        url = ("https://www2.census.gov/geo/tiger/TIGER2024/PRIMARYROADS/"
+               "tl_2024_us_primaryroads.zip")
+        print(f"    downloading {url}")
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=900) as r, open(z, "wb") as f:
+            while True:
+                b = r.read(1 << 20)
+                if not b:
+                    break
+                f.write(b)
+
+    out = INTERIM / "primaryroads.geojsonl"
+    if not out.exists():
+        subprocess.run([
+            "ogr2ogr", "-f", "GeoJSONSeq", str(out),
+            f"/vsizip/{z}", "-t_srs", "EPSG:4326",
+            "-clipdst", "-125", "24", "-66", "50",
+            "-select", "FULLNAME,RTTYP",
+        ], check=True, capture_output=True)
+
+    rows = []
+    with open(out) as fh:
+        for line in fh:
+            try:
+                f = json.loads(line)
+            except Exception:
+                continue
+            p = f.get("properties") or {}
+            # RTTYP I = Interstate, U = US highway, S = State. Weight the
+            # interstates highest: that is what an oversize load actually needs.
+            w = {"I": 1.0, "U": 0.6, "S": 0.4}.get(p.get("RTTYP"), 0.3)
+            for lng, lat in _line_vertices(f.get("geometry"), densify_km=3.0):
+                rows.append({"lat": lat, "lng": lng, "road_class": w,
+                             "name": p.get("FULLNAME")})
+    df = pd.DataFrame(rows)
+    return df[df.lat.between(24, 50) & df.lng.between(-125, -66)].reset_index(drop=True)
+
+
+
+@fetcher("broadband_served")
+def fetch_broadband_served() -> pd.DataFrame:
+    """Household internet subscription rate by county, from ACS 2023.
+
+    SUBSTITUTION: the registry asks for FCC Broadband Data Collection served /
+    underserved BSL counts. FCC's bulk download requires an interactive
+    session and its public API returned 403/405 to every documented endpoint,
+    so there is no scripted path to it.
+
+    ACS B28002 measures household internet SUBSCRIPTION, which is demand-side
+    adoption rather than supply-side availability. For data center siting the
+    two correlate through the same underlying fact -- whether real network
+    infrastructure reaches the area -- but this will understate places with
+    good infrastructure and low adoption. Weighted only 0.02 accordingly.
+    """
+    key = _env("CENSUS_API_KEY")
+    if not key:
+        raise RuntimeError("CENSUS_API_KEY not set")
+    d = _get_json("https://api.census.gov/data/2023/acs/acs5", {
+        "get": "NAME,B28002_001E,B28002_013E", "for": "county:*",
+        "in": "state:*", "key": key})
+    hdr, *rows = d
+    df = pd.DataFrame(rows, columns=hdr)
+    for c in ("B28002_001E", "B28002_013E"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df = df[df["B28002_001E"] > 0]
+    df["join_key"] = df["state"].str.zfill(2) + df["county"].str.zfill(3)
+    # share WITH any internet subscription
+    df["pct_connected"] = (1 - df["B28002_013E"] / df["B28002_001E"]) * 100
+    out = df[["join_key", "pct_connected"]].dropna().reset_index(drop=True)
+    print(f"    ACS B28002: {len(out)} counties, "
+          f"median connected {out['pct_connected'].median():.1f}%")
+    return out
+
+
+
+def _manual_raster(layer_id: str, folder: str, what: str, where: str):
+    """Consume a raster the user had to download by hand.
+
+    Some federal hosts block scripted access outright (USFS returns 403 to any
+    non-browser client; USGS exposes seismic hazard only as contour arcs, not a
+    value surface). Rather than fake those layers, the pipeline looks for a
+    file the user dropped in and skips the layer cleanly if it is absent.
+    """
+    import subprocess
+
+    src = RAW / folder
+    if not src.exists():
+        raise RuntimeError(
+            f"{layer_id}: no data at data/raw/{folder}/.\n"
+            f"       MANUAL STEP - {what}\n"
+            f"       {where}")
+    cands = ([p for p in src.rglob("*.tif")] + [p for p in src.rglob("*.img")]
+             + [p for p in src.rglob("*.gdb") if p.is_dir()])
+    if not cands:
+        raise RuntimeError(f"{layer_id}: nothing readable under data/raw/{folder}/")
+    inp = cands[0]
+    out = INTERIM / f"{layer_id}.tif"
+    subprocess.run([
+        "gdalwarp", "-t_srs", "EPSG:4326", "-te", "-125", "24", "-66", "50",
+        "-ts", "3000", "0", "-r", "average", "-overwrite",
+        "-of", "GTiff", "-co", "COMPRESS=DEFLATE", str(inp), str(out),
+    ], check=True, capture_output=True)
+    print(f"    reprojected {inp.name} -> {out.name}")
+    return pd.DataFrame()
+
+
+@fetcher("wildfire_risk")
+def fetch_wildfire_risk() -> pd.DataFrame:
+    return _manual_raster(
+        "wildfire_risk", "wildfire",
+        "download USFS Wildfire Hazard Potential 2023 (270 m)",
+        "https://www.fs.usda.gov/rds/archive/catalog/RDS-2015-0047-4 "
+        "-> unzip into data/raw/wildfire/")
+
+
+@fetcher("seismic")
+def fetch_seismic() -> pd.DataFrame:
+    return _manual_raster(
+        "seismic", "seismic",
+        "download USGS NSHM PGA, 2% in 50 years, CONUS grid",
+        "https://www.usgs.gov/programs/earthquake-hazards/"
+        "seismic-hazard-maps-and-site-specific-data "
+        "-> put the GeoTIFF in data/raw/seismic/")
+
+
 # ---------------------------------------------------------------------------
 # NETWORK
 # ---------------------------------------------------------------------------

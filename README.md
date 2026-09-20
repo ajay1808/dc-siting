@@ -12,9 +12,9 @@ suitability, and explains *why* each cell scored what it did.
 |---|---|
 | Grid | H3 resolution 7 — **1,467,441 CONUS cells** (~5.16 km² each) |
 | Layers declared | 29 (all V1 = easy + medium tier) |
-| Layers ingested | 16 |
-| Factors live | 11 of 15 — **scores are provisional** |
-| Tile payload | 61.2 MB across 3 archives, largest 42 MB |
+| Layers ingested | 19 |
+| Factors live | 13 of 15 (~92% of weight) |
+| Tile payload | 66.0 MB across 3 archives, largest 45 MB |
 
 Scores are labelled PROVISIONAL until cooling, water, land and policy land.
 The three heaviest factors (grid access, interconnection headroom, power
@@ -105,3 +105,28 @@ rather than deploying something that 404s at runtime.
 If tiles outgrow those limits, move the `.pmtiles` files to Cloudflare R2
 (10 GB free, zero egress, range requests supported) and point the sources in
 `web/src/app.js` at the R2 URL. Nothing else changes.
+
+
+## Land cover: what it actually means here
+
+Scored on **development cost and permitting risk**, not "developed vs not":
+
+| Class | Score | Why |
+|---|---|---|
+| Developed, open space / low | 0.95 / 0.90 | Already serviced and disturbed; parcels big enough |
+| Barren | 0.90 | Cheap, nothing to clear, no habitat |
+| Shrub / grassland | 0.80 | Cheap clearing |
+| Pasture / hay | 0.75 | Already disturbed agriculture |
+| **Cultivated crops** | **0.50** | Looks ideal — flat, cleared — but prime-farmland conversion is the most locally contested change of use there is |
+| Forest | 0.30–0.35 | Clearing cost, stormwater permitting, ESG exposure |
+| **Developed, high intensity** | **0.20** | The *worst* developed class: no room, expensive land |
+| Wetlands / open water | **exclusion** | Clean Water Act §404 — not a low score, a blocker |
+
+Cells are scored by **areal fraction**, not the single class under the
+centroid: at 5 km² "mostly cropland with 15% wetland" is a materially
+different site from "all cropland".
+
+## Security
+
+The published site makes **no API calls** — every key is build-time only.
+See [docs/SECURITY.md](docs/SECURITY.md); run `make audit` before publishing.

@@ -368,6 +368,28 @@ def main() -> int:
     by_id = {l["id"]: l for l in reg["layers"]}
     mult = np.ones(len(grid))
     for lid, rule in excl_cfg.items():
+        # Raster-backed exclusion (e.g. wetland fraction from NLCD).
+        etif = INTERIM / f"{lid}.tif"
+        if etif.exists():
+            import rasterio
+            with rasterio.open(etif) as ds:
+                band = ds.read(1).astype("float32")
+                inv = ~ds.transform
+                eh, ew = band.shape
+            lngs = grid["lng"].to_numpy(); lats = grid["lat"].to_numpy()
+            c2 = np.floor(inv.a * lngs + inv.b * lats + inv.c).astype(np.int64)
+            r2 = np.floor(inv.d * lngs + inv.e * lats + inv.f).astype(np.int64)
+            ok2 = (r2 >= 0) & (r2 < eh) & (c2 >= 0) & (c2 < ew)
+            vals = np.full(len(lngs), np.nan)
+            vals[ok2] = band[r2[ok2], c2[ok2]]
+            mask = np.isfinite(vals) & (vals >= float(rule.get("threshold", 0.5)))
+            m = float(rule.get("multiplier", 0.0))
+            mult = np.where(mask, np.minimum(mult, m), mult)
+            grid[f"x_{lid}"] = mask
+            print(f"  [exclude] {lid:<22} {mask.sum():>9,} cells "
+                  f"({mask.mean():5.1%})  multiplier={m}")
+            continue
+
         layer = by_id.get(lid)
         src = INTERIM / f"{lid}.parquet"
         if layer is None or not src.exists():

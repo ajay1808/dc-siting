@@ -1,12 +1,16 @@
-name: Build & Deploy Siting Map
+name: Deploy Siting Map to Pages
+
+# Deploy-only by design. The data pipeline is NOT run here: it pulls a 261 MB
+# Aqueduct archive, a 54 MB NOAA archive, NLCD WMS tiles and a CONUS DEM, and
+# it queries Overpass, which throttled to the point of taking two hours for a
+# single layer locally. That is too fragile and too rude to a public API to run
+# on a monthly cron. Refresh locally with `make all`, commit the tiles, push.
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 6 1 * *'      # monthly refresh, 1st at 06:00 UTC
   push:
     branches: [main]
-    paths: ['web/**', 'pipeline/**', 'config/**', 'sources/**']
+    paths: ['web/**', '.github/workflows/deploy.yml']
 
 permissions:
   contents: read
@@ -18,49 +22,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12', cache: pip }
-
-      - name: Install python deps
-        run: pip install -r requirements.txt
-
-      - name: Build tippecanoe
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential libsqlite3-dev zlib1g-dev
-          git clone --depth 1 https://github.com/felt/tippecanoe /tmp/tip
-          make -C /tmp/tip -j"$(nproc)" && sudo make -C /tmp/tip install
-
-      - name: Build grid
-        run: python pipeline/grid.py
-
-      - name: Ingest sources
-        env:
-          EIA_API_KEY:        ${{ secrets.EIA_API_KEY }}
-          CENSUS_API_KEY:     ${{ secrets.CENSUS_API_KEY }}
-          NREL_API_KEY:       ${{ secrets.NREL_API_KEY }}
-          PEERINGDB_API_KEY:  ${{ secrets.PEERINGDB_API_KEY }}
-        run: python pipeline/ingest.py
-
-      - name: Score
-        run: python pipeline/score.py
-
-      - name: Tile
-        run: |
-          python pipeline/tiles.py
-          python pipeline/webconfig.py
-          mkdir -p web/tiles && cp tiles/*.pmtiles web/tiles/
-
       - name: Check Pages size limits
         run: |
-          # GitHub Pages: 100 MB per file, 1 GB per site. Fail loudly rather
-          # than deploying something that will 404 at runtime.
+          # 100 MB per file, 1 GB per site. Fail loudly rather than shipping
+          # something that 404s at runtime.
           fail=0
+          shopt -s nullglob
           for f in web/tiles/*.pmtiles; do
             mb=$(( $(stat -c%s "$f") / 1000000 ))
             echo "$f = ${mb} MB"
@@ -71,15 +46,8 @@ jobs:
           [ "$total" -ge 1000 ] && { echo "::error::site exceeds 1 GB"; fail=1; }
           exit $fail
 
+      - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with: { path: web }
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
       - id: deployment
         uses: actions/deploy-pages@v4

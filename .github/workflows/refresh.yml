@@ -1,0 +1,38 @@
+name: Refresh data (manual, long-running)
+
+# Opt-in only. Prefer running `make all` locally: several sources rate-limit
+# hard and one (Overpass) can take hours. Kept here so the pipeline is
+# reproducible on a clean machine, not because it should run unattended.
+on: { workflow_dispatch: }
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12', cache: pip }
+      - run: pip install -r requirements.txt
+      - name: Install GDAL and tippecanoe
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdal-bin build-essential libsqlite3-dev zlib1g-dev
+          git clone --depth 1 https://github.com/felt/tippecanoe /tmp/tip
+          make -C /tmp/tip -j"$(nproc)" && sudo make -C /tmp/tip install
+      - env:
+          EIA_API_KEY:       ${{ secrets.EIA_API_KEY }}
+          CENSUS_API_KEY:    ${{ secrets.CENSUS_API_KEY }}
+          NREL_API_KEY:      ${{ secrets.NREL_API_KEY }}
+          PEERINGDB_API_KEY: ${{ secrets.PEERINGDB_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python pipeline/grid.py
+          python pipeline/counties.py
+          python pipeline/ingest.py || true   # a blocked source must not kill the run
+          python pipeline/score.py
+          python pipeline/tiles.py
+          python pipeline/webconfig.py
+          mkdir -p web/tiles && cp tiles/*.pmtiles web/tiles/
+      - uses: actions/upload-artifact@v4
+        with: { name: tiles, path: web/tiles/*.pmtiles, retention-days: 7 }

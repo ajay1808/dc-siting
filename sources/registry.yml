@@ -272,11 +272,18 @@ layers:
       - name: fcc_bdc
         url: https://broadbandmap.fcc.gov/data-download
         format: page
-    fields: [total_bsls, served_bsls, underserved_bsls]
+    fields: [pct_connected]
     scoring:
       factor: network_infrastructure
       direction: positive
-      method: ratio_normalize
+      method: normalize
+      value_field: pct_connected
+      clamp: [55, 95]
+    substitution: >
+      FCC BDC has no scripted access path (403/405 on every public endpoint),
+      so this uses ACS B28002 household internet subscription. That is
+      adoption, not availability, and understates areas with good
+      infrastructure but low uptake.
 
   - id: existing_datacenters
     name: Existing Data Centers
@@ -556,21 +563,16 @@ layers:
         format: page
     scoring:
       factor: buildability
-      direction: categorical
-      class_scores:
-        21: 0.9    # developed open space
-        22: 0.85   # developed low intensity
-        23: 0.6    # developed medium
-        24: 0.3    # developed high (no room)
-        81: 0.8    # pasture/hay
-        82: 0.75   # cropland
-        31: 0.7    # barren
-        41: 0.25   # forest
-        42: 0.25
-        43: 0.25
-        90: 0.0    # woody wetlands
-        95: 0.0    # emergent wetlands
-        11: 0.0    # open water
+      direction: positive
+      method: normalize      # ingest already emits a 0-1 suitability raster
+      clamp: [0, 1]
+    note_model: >
+      Scored on development cost and permitting risk, not on "developed vs
+      not". Developed high-intensity is the WORST developed class (no room,
+      expensive land); developed open space and low intensity are the best
+      (already serviced and disturbed). Cultivated crops score well below
+      pasture because prime-farmland conversion is the most locally contested
+      change of use. Wetlands are an exclusion, not a low score.
 
   - id: protected_lands
     name: Protected Lands (Parks, Critical Habitat, ACEC)
@@ -634,8 +636,9 @@ layers:
       factor: logistics
       direction: positive
       method: distance_decay
-      decay_km: 20
-      max_km: 60
+      weight_field: road_class
+      decay_km: 15
+      max_km: 50
 
 # =============================================================================
 # JURISDICTION / SOCIOECONOMIC

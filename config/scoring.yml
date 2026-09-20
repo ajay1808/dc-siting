@@ -32,10 +32,14 @@ exclusions:
     mode: soft
     multiplier: 0.25
     reason: FEMA 100-year floodplain
-  open_water:
-    mode: hard
-    multiplier: 0.0
-    reason: NLCD open water / wetland
+  land_cover_wetland:
+    mode: soft
+    multiplier: 0.15
+    threshold: 0.5
+    reason: >
+      Majority wetland or open water. Clean Water Act section 404 permitting
+      through USACE makes a large pad impractical. Soft rather than hard: at
+      5 km2 a cell that is 60% wetland may still hold a buildable parcel.
 
 # --- flags: surfaced in the UI, never folded into the score ------------------
 flags:
@@ -130,12 +134,12 @@ factors:
 
   gas_access:
     label: Natural Gas Access
-    weight: 0.04
+    weight: 0.03
     inputs: [gas_pipelines]
 
   clean_power_potential:
     label: Renewable Resource
-    weight: 0.03
+    weight: 0.02
     inputs: [solar_wind_potential]
 
   network_infrastructure:
@@ -144,8 +148,8 @@ factors:
     inputs: [broadband_served]
 
   logistics:
-    label: Rail & Highway Access
-    weight: 0.01
+    label: Highway Access
+    weight: 0.03
     inputs: [rail_highway]
 
 # --- alternative weightings ---------------------------------------------------

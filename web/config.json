@@ -47,19 +47,19 @@
   },
   "gas_access": {
    "label": "Natural Gas Access",
-   "weight": 0.04
+   "weight": 0.03
   },
   "clean_power_potential": {
    "label": "Renewable Resource",
-   "weight": 0.03
+   "weight": 0.02
   },
   "network_infrastructure": {
    "label": "Broadband Infrastructure",
    "weight": 0.02
   },
   "logistics": {
-   "label": "Rail & Highway Access",
-   "weight": 0.01
+   "label": "Highway Access",
+   "weight": 0.03
   }
  },
  "profiles": {
@@ -78,10 +78,10 @@
     "hazard": 0.06,
     "generation_proximity": 0.03,
     "market_maturity": 0.03,
-    "gas_access": 0.04,
-    "clean_power_potential": 0.03,
+    "gas_access": 0.03,
+    "clean_power_potential": 0.02,
     "network_infrastructure": 0.02,
-    "logistics": 0.01
+    "logistics": 0.03
    }
   },
   "ai_training": {
@@ -159,7 +159,9 @@
   "policy_climate",
   "generation_proximity",
   "market_maturity",
-  "gas_access"
+  "gas_access",
+  "network_infrastructure",
+  "logistics"
  ],
  "flags": [
   {
