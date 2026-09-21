@@ -13,47 +13,41 @@
 <aside id="panel">
   <header>
     <h1>Siting Command</h1>
-    <p class="sub">Data-center suitability · H3 r7 · CONUS</p>
+    <p class="sub">Data-center suitability · H3 r7 · CONUS
+      <button id="open-about" class="link">what is this?</button></p>
   </header>
 
   <nav class="tabs">
     <button data-tab="score" class="on">Score</button>
     <button data-tab="weights">Weights</button>
     <button data-tab="cell">Cell</button>
+    <button data-tab="sites">Sites</button>
+    <button data-tab="region">Region</button>
   </nav>
 
-  <!-- ── SCORE ─────────────────────────────────────────────── -->
   <section data-panel="score">
     <label class="lbl">Weighting profile</label>
     <select id="profile"></select>
     <p id="profile-desc" class="desc"></p>
-
     <label class="lbl mt">Score</label>
     <div id="ramp"></div>
     <div class="ticks"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
-
     <label class="lbl mt">Minimum score <b id="minval">0</b></label>
     <input type="range" id="minscore" min="0" max="100" value="0">
-
+    <label class="lbl mt">Data sources</label>
+    <div id="srclist"></div>
     <div id="calib" class="note"></div>
     <div id="excl"></div>
   </section>
 
-  <!-- ── WEIGHTS ───────────────────────────────────────────── -->
   <section data-panel="weights" hidden>
-    <p class="desc">
-      Adjust any weight to build your own methodology. Weights are
-      renormalised, so only their <em>ratios</em> matter. Click
-      <b>ⓘ</b> for the source behind a factor.
-    </p>
-    <div class="wbar">
-      <button id="reset">Reset to profile</button>
-      <span id="wsum"></span>
-    </div>
+    <p class="desc">Adjust any weight to build your own methodology. Weights are
+      renormalised, so only their <em>ratios</em> matter. Click <b>ⓘ</b> for the
+      source behind a factor.</p>
+    <div class="wbar"><button id="reset">Reset to profile</button><span id="wsum"></span></div>
     <div id="factors"></div>
   </section>
 
-  <!-- ── CELL ──────────────────────────────────────────────── -->
   <section data-panel="cell" hidden>
     <div id="cell-empty" class="desc">Click a hexagon on the map.</div>
     <div id="cell-body" hidden>
@@ -67,20 +61,63 @@
         <button id="copy-h3">Copy H3 index</button>
         <button id="dl-geojson">Download GeoJSON</button>
       </div>
+      <label class="lbl mt">Policy &amp; news</label>
+      <button id="news-cell" class="wide">Search recent news for this area</button>
+      <div id="news-out"></div>
       <p class="desc" id="h3note"></p>
     </div>
+  </section>
+
+  <section data-panel="sites" hidden>
+    <p class="desc">Upload candidate sites to score and rank them against each
+      other. Accepts <b>.zip</b> (shapefile), <b>.geojson</b>, <b>.json</b>, or
+      <b>.csv</b> with lat/lon columns.</p>
+    <input type="file" id="site-file" accept=".zip,.geojson,.json,.csv,.txt">
+    <div id="site-status" class="desc"></div>
+    <div class="wbar mt"><button id="rank-ai">AI recommendation</button>
+      <button id="dl-sites">Export ranked CSV</button></div>
+    <div id="site-list"></div>
+    <div id="site-ai"></div>
+  </section>
+
+  <section data-panel="region" hidden>
+    <p class="desc">Click <b>Select area</b> then drag a box on the map (or hold
+      <b>Shift</b> and drag any time), then aggregate to an administrative
+      boundary.</p>
+    <button id="sel-mode" class="wide">Select area</button>
+    <label class="lbl mt">Aggregate to</label>
+    <select id="agg-level">
+      <option value="county">County</option>
+      <option value="state">State</option>
+      <option value="h3_5">H3 parent · r5 (~253 km²)</option>
+      <option value="h3_6">H3 parent · r6 (~36 km²)</option>
+      <option value="cells">Individual cells (no aggregation)</option>
+    </select>
+    <div class="wbar mt"><button id="clear-sel">Clear selection</button>
+      <button id="dl-region">Export GeoJSON</button>
+      <button id="dl-region-csv">Export CSV</button></div>
+    <div id="region-status" class="desc"></div>
+    <div id="region-list"></div>
+    <label class="lbl mt">Policy &amp; news</label>
+    <button id="news-region" class="wide">Search recent news for this region</button>
+    <div id="news-region-out"></div>
   </section>
 
   <footer>
     <div id="status">loading…</div>
     <p class="warn" id="provisional"></p>
+    <button id="open-key" class="link">AI key settings</button>
   </footer>
 </aside>
 
 <div id="info" hidden><div id="info-card"></div></div>
+<div id="about" hidden><div id="about-card"></div></div>
+<div id="keymodal" hidden><div id="key-card"></div></div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/pmtiles@4.5.0/dist/pmtiles.js"></script>
+<script src="https://unpkg.com/shpjs@6.1.0/dist/shp.min.js"></script>
+<script src="https://unpkg.com/h3-js@4.1.0/dist/h3-js.umd.js"></script>
 <script type="module" src="./src/app.js"></script>
 </body>
 </html>

@@ -234,7 +234,13 @@ def fetch_substations() -> pd.DataFrame:
             t = el.get("tags", {})
             volts = [float(x) for x in re.findall(r"\d+", str(t.get("voltage", "")))]
             kv = max(volts) / 1000.0 if volts else None
+            # OSM's substation subtag is the authoritative transmission vs
+            # distribution signal. Without it, a 13.8 kV neighbourhood
+            # distribution substation is indistinguishable from a 500 kV
+            # transmission bus -- and for a 100 MW+ load they are not remotely
+            # the same thing.
             rows.append({"lat": lat, "lng": lng, "MAX_VOLT": kv,
+                         "sub_type": t.get("substation"),
                          "name": t.get("name"), "operator": t.get("operator")})
         band = pd.DataFrame(rows)
         band.to_parquet(cache, index=False, compression="zstd")
@@ -244,7 +250,35 @@ def fetch_substations() -> pd.DataFrame:
 
     if missing:
         print(f"    !! tiles still missing: {missing} - rerun to fill them in")
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if not frames:
+        return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True)
+
+    # Drop DISTRIBUTION substations. A 13.8 kV neighbourhood distribution
+    # substation is worth essentially nothing to a 100 MW+ load, but the raw
+    # OSM layer mixes them in with transmission buses: an audit found 5.2%
+    # under 35 kV and 8.0% at 35-69 kV, and a quarter of all records untagged.
+    before = len(df)
+    kv = pd.to_numeric(df.get("MAX_VOLT"), errors="coerce")
+    sub = df.get("sub_type").astype(str).str.lower() if "sub_type" in df else None
+
+    is_dist = pd.Series(False, index=df.index)
+    if sub is not None:
+        is_dist |= sub.isin(["distribution", "minor_distribution", "traction"])
+    is_dist |= kv.notna() & (kv < 35)          # explicit low voltage
+    df = df[~is_dist].copy()
+
+    # Untagged voltage: infer from the subtag where present, else mark it so
+    # the scorer can weight it conservatively rather than assuming the median
+    # (which previously promoted untagged records to ~115 kV).
+    df["is_transmission"] = (sub.reindex(df.index).eq("transmission")
+                             if sub is not None else False)
+    kept_kv = pd.to_numeric(df["MAX_VOLT"], errors="coerce")
+    print(f"    substations {before:,} -> {len(df):,} after dropping distribution "
+          f"({before-len(df):,} removed)")
+    print(f"    remaining with voltage: {kept_kv.notna().mean():.1%} | "
+          f"tagged transmission: {df['is_transmission'].mean():.1%}")
+    return df.reset_index(drop=True)
 
 
 
@@ -1065,6 +1099,10 @@ def fetch_gas_pipelines() -> pd.DataFrame:
     rows = []
     for f in _arcgis_paged(BASE, out_fields="TYPEPIPE,Operator"):
         p = f.get("properties", {}) or {}
+        # Gathering lines carry raw gas from wellheads to processing; they are
+        # not deliverable supply and should not read as gas access.
+        if str(p.get("TYPEPIPE", "")).strip().lower() == "gathering":
+            continue
         for lng, lat in _line_vertices(f.get("geometry"), densify_km=4.0):
             rows.append({"lat": lat, "lng": lng, "typepipe": p.get("TYPEPIPE"),
                          "operator": p.get("Operator")})

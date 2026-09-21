@@ -3,7 +3,7 @@
  "factors": {
   "grid_access": {
    "label": "Transmission & Substation Access",
-   "weight": 0.1407,
+   "weight": 0.1232,
    "inputs": [
     "transmission_lines",
     "substations"
@@ -17,7 +17,7 @@
   },
   "grid_headroom": {
    "label": "Interconnection Headroom",
-   "weight": 0.1676,
+   "weight": 0.1672,
    "inputs": [
     "interconnection_queue"
    ],
@@ -30,7 +30,7 @@
   },
   "power_cost": {
    "label": "Industrial Power Cost",
-   "weight": 0.1575,
+   "weight": 0.1578,
    "inputs": [
     "retail_power_price"
    ],
@@ -43,7 +43,7 @@
   },
   "cooling_efficiency": {
    "label": "Cooling Climate",
-   "weight": 0.028,
+   "weight": 0.0293,
    "inputs": [
     "cooling_climate"
    ],
@@ -69,7 +69,7 @@
   },
   "water_availability": {
    "label": "Water Availability",
-   "weight": 0.031,
+   "weight": 0.0275,
    "inputs": [
     "water_stress",
     "water_treatment"
@@ -83,7 +83,7 @@
   },
   "buildability": {
    "label": "Terrain & Land Cover",
-   "weight": 0.1439,
+   "weight": 0.1399,
    "inputs": [
     "slope",
     "land_cover"
@@ -97,7 +97,7 @@
   },
   "policy_climate": {
    "label": "Policy & Incentive Climate",
-   "weight": 0.087,
+   "weight": 0.0812,
    "inputs": [
     "policy_climate"
    ],
@@ -110,7 +110,7 @@
   },
   "hazard": {
    "label": "Natural Hazard Exposure",
-   "weight": 0.0308,
+   "weight": 0.0417,
    "inputs": [
     "hazard_nri",
     "seismic",
@@ -125,7 +125,7 @@
   },
   "generation_proximity": {
    "label": "Generation Proximity",
-   "weight": 0.0543,
+   "weight": 0.0552,
    "inputs": [
     "power_plants"
    ],
@@ -151,7 +151,7 @@
   },
   "gas_access": {
    "label": "Natural Gas Access",
-   "weight": 0.0287,
+   "weight": 0.0337,
    "inputs": [
     "gas_pipelines"
    ],
@@ -164,7 +164,7 @@
   },
   "clean_power_potential": {
    "label": "Renewable Resource",
-   "weight": 0.0196,
+   "weight": 0.015,
    "inputs": [
     "solar_wind_potential"
    ],
@@ -177,7 +177,7 @@
   },
   "network_infrastructure": {
    "label": "Broadband Infrastructure",
-   "weight": 0.0245,
+   "weight": 0.0357,
    "inputs": [
     "broadband_served"
    ],
@@ -190,7 +190,7 @@
   },
   "logistics": {
    "label": "Highway Access",
-   "weight": 0.0236,
+   "weight": 0.0299,
    "inputs": [
     "rail_highway"
    ],
@@ -207,21 +207,21 @@
    "label": "Balanced (calibrated)",
    "description": "Fitted against real campuses and known-bad sites.",
    "weights": {
-    "grid_access": 0.1407,
-    "grid_headroom": 0.1676,
-    "power_cost": 0.1575,
-    "cooling_efficiency": 0.028,
+    "grid_access": 0.1232,
+    "grid_headroom": 0.1672,
+    "power_cost": 0.1578,
+    "cooling_efficiency": 0.0293,
     "network_latency": 0.015,
-    "water_availability": 0.031,
-    "buildability": 0.1439,
-    "policy_climate": 0.087,
-    "hazard": 0.0308,
-    "generation_proximity": 0.0543,
+    "water_availability": 0.0275,
+    "buildability": 0.1399,
+    "policy_climate": 0.0812,
+    "hazard": 0.0417,
+    "generation_proximity": 0.0552,
     "market_maturity": 0.0478,
-    "gas_access": 0.0287,
-    "clean_power_potential": 0.0196,
-    "network_infrastructure": 0.0245,
-    "logistics": 0.0236
+    "gas_access": 0.0337,
+    "clean_power_potential": 0.015,
+    "network_infrastructure": 0.0357,
+    "logistics": 0.0299
    }
   },
   "ai_training": {
@@ -349,8 +349,8 @@
   }
  },
  "calibration": {
-  "positives_mean": 65.89,
-  "negatives_mean": 30.06,
+  "positives_mean": 64.19,
+  "negatives_mean": 30.13,
   "n_positive": 28,
   "n_negative": 15,
   "prior_strength": 0.45

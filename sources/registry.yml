@@ -57,7 +57,10 @@ layers:
       method: distance_decay
       # voltage-weighted: a 500kV line is worth far more than a 69kV line
       weight_field: VOLTAGE
-      weight_curve: {69: 0.2, 115: 0.4, 230: 0.7, 345: 0.9, 500: 1.0, 765: 1.0}
+      # NOTE: weighting is percentile-normalised against the 95th percentile in
+      # score.py, not a lookup curve. A weight_curve key used to sit here and
+      # was never read by any code -- documentation of behaviour that did not
+      # exist. Removed rather than left to mislead.
       decay_km: 15
       max_km: 40
 
@@ -85,7 +88,7 @@ layers:
       direction: positive
       method: distance_decay
       weight_field: MAX_VOLT
-      weight_curve: {69: 0.2, 115: 0.5, 230: 0.8, 345: 1.0, 500: 1.0}
+      untagged_weight: 0.25   # OSM untagged skews small; do not assume median
       decay_km: 10
       max_km: 30
 
@@ -115,6 +118,10 @@ layers:
       method: capacity_within_radius
       value_field: capacity_mw
       radius_km: 50
+      # Explicit so the scale cannot drift between refreshes. Without it the
+      # normaliser used the observed 97th percentile, so one new gigawatt-scale
+      # project silently restated every other cell's headroom score.
+      clamp_total_mw: [0, 6000]
 
   - id: balancing_authorities
     name: Balancing Authority Territories
@@ -200,6 +207,7 @@ layers:
       method: capacity_within_radius
       value_field: capacity_mw
       radius_km: 40
+      clamp_total_mw: [0, 12000]
 
   - id: gas_pipelines
     name: Natural Gas Transmission Pipelines
@@ -512,7 +520,10 @@ layers:
       direction: negative
       method: normalize_invert
       value_field: hazard_index
-      clamp: [0, 60]
+      # Was [0,60], which pinned 13.4% of counties at exactly 0 -- all of
+      # hurricane Florida and wildfire California collapsed to one value and
+      # became indistinguishable. NRI runs to 93.
+      clamp: [0, 95]
 
   - id: seismic
     name: Seismic Hazard (PGA 2% in 50yr)

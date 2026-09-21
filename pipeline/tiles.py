@@ -37,6 +37,8 @@ def aggregate(df: pd.DataFrame, factor_cols: list[str], parent_res: int,
     agg = {"score": "mean", "factors_used": "max", "state_fips": "first"}
     if "county_names" in d.columns:
         agg["county_names"] = "first"
+    if "excl_mult" in d.columns:
+        agg["excl_mult"] = "mean"
     for c in factor_cols:
         agg[c] = "mean"
     # A parent cell inherits a flag if ANY child carries it -- the coarse view
@@ -66,6 +68,10 @@ def features(df: pd.DataFrame, factor_cols: list[str],
         cn = d.get("county_names")
         if cn:
             props["cnames"] = cn
+        # Exclusion multiplier x100. Needed so client-side reweighting can
+        # reproduce exclusions instead of silently dropping them.
+        em = d.get("excl_mult")
+        props["xm"] = 100 if em is None or em != em else int(round(float(em) * 100))
         for c in factor_cols:
             v = d.get(c)
             if v is not None and v == v:

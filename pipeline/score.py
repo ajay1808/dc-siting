@@ -53,15 +53,23 @@ def distance_decay(cells_xy, feat_xy, weights, decay_km, max_km, k=24):
     return np.clip(decayed.max(axis=1), 0, 1)
 
 
-def sum_within_radius(cells_xy, feat_xy, values, radius_km):
-    """Total capacity/value inside a radius, log-compressed then normalized."""
+def sum_within_radius(cells_xy, feat_xy, values, radius_km, clamp_total=None):
+    """Total capacity/value inside a radius, log-compressed then normalized.
+
+    Prefers an EXPLICIT clamp. Normalising to the observed 97th percentile
+    makes the scale depend on the data, so one new gigawatt-scale project
+    restates every other cell's score on the next refresh.
+    """
     if len(feat_xy) == 0:
         return np.full(len(cells_xy), np.nan)
     ftree, ctree = cKDTree(feat_xy), cKDTree(cells_xy)
     pairs = ctree.query_ball_tree(ftree, r=radius_km * 1000)
     totals = np.array([values[p].sum() if p else 0.0 for p in pairs])
     lg = np.log1p(totals)
-    hi = np.percentile(lg[lg > 0], 97) if (lg > 0).any() else 1.0
+    if clamp_total:
+        hi = np.log1p(float(clamp_total[1]))
+    else:
+        hi = np.percentile(lg[lg > 0], 97) if (lg > 0).any() else 1.0
     return np.clip(lg / hi, 0, 1) if hi > 0 else np.zeros_like(lg)
 
 
@@ -294,11 +302,13 @@ def compute_layer_subscore(layer, cells_xy, grid):
                 w = np.where(known, np.clip(raw / hi, 0.05, 1.0), np.nan)
             else:
                 w = np.full(len(df), np.nan)
-            # A feature with no voltage tag is still a real asset. Flooring it
-            # at the minimum weight would make an untagged substation read as
-            # nearly worthless; score it at the median of what we do know.
-            neutral = np.nanmedian(w) if known.any() else 0.5
-            w = np.where(np.isfinite(w), w, neutral)
+            # Untagged features get a CONSERVATIVE weight, not the median.
+            # OSM taggers record voltage on big substations far more often than
+            # on small ones, so the untagged population skews low -- using the
+            # median promoted them to roughly 115 kV, inflating distribution
+            # assets into transmission class. 0.25 is about sub-transmission.
+            fallback = spec.get("untagged_weight", 0.25)
+            w = np.where(np.isfinite(w), w, fallback)
         else:
             w = np.ones(len(df))
         return distance_decay(cells_xy, feat_xy, w,
@@ -308,7 +318,8 @@ def compute_layer_subscore(layer, cells_xy, grid):
         vf = spec.get("value_field")
         vals = (pd.to_numeric(df[vf], errors="coerce").fillna(0).to_numpy()
                 if vf and vf in df.columns else np.ones(len(df)))
-        return sum_within_radius(cells_xy, feat_xy, vals, spec.get("radius_km", 50))
+        return sum_within_radius(cells_xy, feat_xy, vals, spec.get("radius_km", 50),
+                                 spec.get("clamp_total_mw"))
 
     if method in ("idw", "idw_invert"):
         vf = spec.get("value_field")
@@ -471,6 +482,10 @@ def main() -> int:
         grid[f"flag_{flag['id']}"] = fm
         print(f"  [flag]    {flag['id']:<22} {fm.sum():>9,} cells ({fm.mean():5.1%})")
 
+    # Persist the multiplier itself. The map recomputes the weighted score
+    # client-side when weights change, and without this it had no way to apply
+    # exclusions -- Yosemite rendered as a developable ~16 instead of 0.
+    grid["excl_mult"] = np.round(mult, 3)
     grid["score"] = np.round(total * 100, 1)
     grid["factors_used"] = present.sum(axis=0)
     for fid, v in factor_vals.items():

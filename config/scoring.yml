@@ -72,25 +72,25 @@ factors:
 
   grid_access:
     label: Transmission & Substation Access
-    weight: 0.1407
+    weight: 0.1232
     inputs: [transmission_lines, substations]
     combine: max          # nearest good interconnect governs
 
   grid_headroom:
     label: Interconnection Headroom
-    weight: 0.1676
+    weight: 0.1672
     inputs: [interconnection_queue]
     note: Queue capacity nearby is the strongest available proxy for whether
           new large load can actually be energized this decade.
 
   power_cost:
     label: Industrial Power Cost
-    weight: 0.1575
+    weight: 0.1578
     inputs: [retail_power_price]
 
   cooling_efficiency:
     label: Cooling Climate
-    weight: 0.0280
+    weight: 0.0293
     inputs: [cooling_climate]
     note: Design wet-bulb sets achievable PUE and annual water draw.
 
@@ -101,30 +101,30 @@ factors:
 
   water_availability:
     label: Water Availability
-    weight: 0.0310
+    weight: 0.0275
     inputs: [water_stress, water_treatment]
     combine: mean
 
   buildability:
     label: Terrain & Land Cover
-    weight: 0.1439
+    weight: 0.1399
     inputs: [slope, land_cover]
     combine: product      # steep AND forested is much worse than either alone
 
   policy_climate:
     label: Policy & Incentive Climate
-    weight: 0.0870
+    weight: 0.0812
     inputs: [policy_climate]
 
   hazard:
     label: Natural Hazard Exposure
-    weight: 0.0308
+    weight: 0.0417
     inputs: [hazard_nri, seismic, wildfire_risk]
     combine: min          # worst hazard governs; manual rasters refine NRI
 
   generation_proximity:
     label: Generation Proximity
-    weight: 0.0543
+    weight: 0.0552
     inputs: [power_plants]
     note: Nearby installed capacity. Overlaps grid_access by design but is
           distinct - a plant next door is not the same as a 500kV line.
@@ -136,22 +136,22 @@ factors:
 
   gas_access:
     label: Natural Gas Access
-    weight: 0.0287
+    weight: 0.0337
     inputs: [gas_pipelines]
 
   clean_power_potential:
     label: Renewable Resource
-    weight: 0.0196
+    weight: 0.0150
     inputs: [solar_wind_potential]
 
   network_infrastructure:
     label: Broadband Infrastructure
-    weight: 0.0245
+    weight: 0.0357
     inputs: [broadband_served]
 
   logistics:
     label: Highway Access
-    weight: 0.0236
+    weight: 0.0299
     inputs: [rail_highway]
 
 # --- alternative weightings ---------------------------------------------------

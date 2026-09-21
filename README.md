@@ -157,3 +157,37 @@ factors — and the target was left honest rather than moved to flatter the fit.
 
 Run `python pipeline/calibrate.py` to see the per-case table without changing
 anything; add `--apply` to write the weights.
+
+
+## Variable audit (2026-09-21)
+
+Checked every variable for scale and semantics. Two findings mattered.
+
+**Transmission is genuinely transmission.** Minimum 100 kV at the 1st
+percentile, zero features below 69 kV, `VOLT_CLASS` spanning 100-161 up to
+735+. No distribution contamination.
+
+**Substations were 40% distribution.** OSM's `power=substation` covers
+everything from a 500 kV transmission bus to a 13.8 kV pole-mounted
+neighbourhood transformer, and the original ingest captured neither the
+`substation=*` subtag nor a voltage floor. Worse, 25% had no voltage tag and
+the scorer assigned them the *median* of known values — promoting distribution
+assets to roughly 115 kV. Now the subtag is captured, `distribution`,
+`minor_distribution`, `traction` and anything under 35 kV are dropped
+(**30,791 of 77,794 removed**), and untagged features get a conservative
+0.25 weight instead of the median.
+
+Also fixed:
+
+| Issue | Was | Now |
+|---|---|---|
+| Hazard clamp | `[0,60]` pinned 13.4% of counties at exactly 0 — all of hurricane Florida and wildfire California indistinguishable | `[0,95]` |
+| Capacity normalisation | observed 97th percentile, so one new gigawatt project restated every cell | explicit `clamp_total_mw` |
+| Gas pipelines | included gathering lines (raw wellhead gas, not deliverable) | dropped |
+| `weight_curve` | declared in the registry, never read by any code | removed |
+
+**Exclusions were missing from the rendered map.** The client recomputes the
+weighted score when weights change, but had no access to the exclusion
+multiplier — so Yosemite rendered as a developable ~16 instead of 0. The
+multiplier is now baked per cell as `xm` and applied in both the GPU
+expression and the JS recompute.
