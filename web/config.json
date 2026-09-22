@@ -3,7 +3,7 @@
  "factors": {
   "grid_access": {
    "label": "Transmission & Substation Access",
-   "weight": 0.1232,
+   "weight": 0.1089,
    "inputs": [
     "transmission_lines",
     "substations"
@@ -17,7 +17,7 @@
   },
   "grid_headroom": {
    "label": "Interconnection Headroom",
-   "weight": 0.1672,
+   "weight": 0.1558,
    "inputs": [
     "interconnection_queue"
    ],
@@ -30,7 +30,7 @@
   },
   "power_cost": {
    "label": "Industrial Power Cost",
-   "weight": 0.1578,
+   "weight": 0.1433,
    "inputs": [
     "retail_power_price"
    ],
@@ -43,7 +43,7 @@
   },
   "cooling_efficiency": {
    "label": "Cooling Climate",
-   "weight": 0.0293,
+   "weight": 0.015,
    "inputs": [
     "cooling_climate"
    ],
@@ -69,7 +69,7 @@
   },
   "water_availability": {
    "label": "Water Availability",
-   "weight": 0.0275,
+   "weight": 0.0163,
    "inputs": [
     "water_stress",
     "water_treatment"
@@ -83,7 +83,7 @@
   },
   "buildability": {
    "label": "Terrain & Land Cover",
-   "weight": 0.1399,
+   "weight": 0.1317,
    "inputs": [
     "slope",
     "land_cover"
@@ -97,7 +97,7 @@
   },
   "policy_climate": {
    "label": "Policy & Incentive Climate",
-   "weight": 0.0812,
+   "weight": 0.0726,
    "inputs": [
     "policy_climate"
    ],
@@ -110,7 +110,7 @@
   },
   "hazard": {
    "label": "Natural Hazard Exposure",
-   "weight": 0.0417,
+   "weight": 0.0342,
    "inputs": [
     "hazard_nri",
     "seismic",
@@ -123,9 +123,48 @@
    "caveat": null,
    "live": true
   },
+  "retirement_opportunity": {
+   "label": "Brownfield Interconnection",
+   "weight": 0.0161,
+   "inputs": [
+    "retirement_opportunity"
+   ],
+   "source": "EIA-860M, Retired generators sheet",
+   "source_url": "https://www.eia.gov/electricity/data/eia860m/",
+   "detail": "2,526 retired plants, 295 GW raw capacity",
+   "means": "Recently retired thermal generation nearby. A closing plant leaves an energised point of interconnection with transmission already sized for its former output, and re-using that POI is currently the fastest route to large new load in the US.",
+   "caveat": "Weighted by recency. A plant retired in the 1990s has usually had its interconnection rights released, so old retirements count far less. This does not confirm the POI is actually available -- that requires asking the utility.",
+   "live": true
+  },
+  "air_permitting": {
+   "label": "Air Permitting Headroom",
+   "weight": 0.0674,
+   "inputs": [
+    "air_permitting"
+   ],
+   "source": "EPA Green Book nonattainment & maintenance areas",
+   "source_url": "https://www.epa.gov/green-book",
+   "detail": "136 designated areas, weighted by pollutant and classification",
+   "means": "Whether the 50-200 MW of backup generation a campus needs can be permitted. Inside a nonattainment area that plant triggers New Source Review, may require emission offsets purchased in the same airshed, and faces hard caps on annual test-run hours. One of the most consequential siting constraints that public maps almost never carry.",
+   "caveat": "Weighted toward pollutants backup gensets actually emit (ozone precursors, PM) over ones they barely touch (lead, SO2). Maintenance areas count at 45% and revoked standards at 40% of the equivalent burden. Actual permitting turns on local district rules this cannot see.",
+   "live": true
+  },
+  "grid_carbon": {
+   "label": "Grid Carbon Intensity",
+   "weight": 0.015,
+   "inputs": [
+    "grid_carbon"
+   ],
+   "source": "EPA eGRID 2023, subregion output rates",
+   "source_url": "https://www.epa.gov/egrid",
+   "detail": "27 subregions, 243\u20131,549 lb CO2e/MWh",
+   "means": "Carbon intensity of the grid where the site sits, before any power purchase agreement. Determines how much clean procurement a corporate commitment will require, and increasingly whether a project is approvable at all.",
+   "caveat": "Subregion averages, so intra-region variation is invisible. A PPA or on-site generation can override this entirely, and marginal emissions (what an extra MW actually causes) differ from these average rates.",
+   "live": true
+  },
   "generation_proximity": {
    "label": "Generation Proximity",
-   "weight": 0.0552,
+   "weight": 0.0553,
    "inputs": [
     "power_plants"
    ],
@@ -138,7 +177,7 @@
   },
   "market_maturity": {
    "label": "Existing DC Cluster",
-   "weight": 0.0478,
+   "weight": 0.0566,
    "inputs": [
     "existing_datacenters"
    ],
@@ -151,7 +190,7 @@
   },
   "gas_access": {
    "label": "Natural Gas Access",
-   "weight": 0.0337,
+   "weight": 0.0352,
    "inputs": [
     "gas_pipelines"
    ],
@@ -177,7 +216,7 @@
   },
   "network_infrastructure": {
    "label": "Broadband Infrastructure",
-   "weight": 0.0357,
+   "weight": 0.0155,
    "inputs": [
     "broadband_served"
    ],
@@ -190,7 +229,7 @@
   },
   "logistics": {
    "label": "Highway Access",
-   "weight": 0.0299,
+   "weight": 0.0311,
    "inputs": [
     "rail_highway"
    ],
@@ -207,84 +246,96 @@
    "label": "Balanced (calibrated)",
    "description": "Fitted against real campuses and known-bad sites.",
    "weights": {
-    "grid_access": 0.1232,
-    "grid_headroom": 0.1672,
-    "power_cost": 0.1578,
-    "cooling_efficiency": 0.0293,
+    "grid_access": 0.1089,
+    "grid_headroom": 0.1558,
+    "power_cost": 0.1433,
+    "cooling_efficiency": 0.015,
     "network_latency": 0.015,
-    "water_availability": 0.0275,
-    "buildability": 0.1399,
-    "policy_climate": 0.0812,
-    "hazard": 0.0417,
-    "generation_proximity": 0.0552,
-    "market_maturity": 0.0478,
-    "gas_access": 0.0337,
+    "water_availability": 0.0163,
+    "buildability": 0.1317,
+    "policy_climate": 0.0726,
+    "hazard": 0.0342,
+    "retirement_opportunity": 0.0161,
+    "air_permitting": 0.0674,
+    "grid_carbon": 0.015,
+    "generation_proximity": 0.0553,
+    "market_maturity": 0.0566,
+    "gas_access": 0.0352,
     "clean_power_potential": 0.015,
-    "network_infrastructure": 0.0357,
-    "logistics": 0.0299
+    "network_infrastructure": 0.0155,
+    "logistics": 0.0311
    }
   },
   "ai_training": {
    "label": "AI / HPC Training Campus",
    "description": "Power-dominant. Latency is nearly irrelevant; cooling and interconnection headroom dominate.",
    "weights": {
-    "grid_access": 0.16,
-    "generation_proximity": 0.04,
-    "grid_headroom": 0.18,
-    "power_cost": 0.12,
-    "cooling_efficiency": 0.12,
-    "water_availability": 0.09,
-    "buildability": 0.07,
-    "policy_climate": 0.07,
-    "hazard": 0.05,
-    "gas_access": 0.04,
-    "clean_power_potential": 0.04,
-    "network_latency": 0.02,
+    "grid_access": 0.1376,
+    "generation_proximity": 0.0344,
+    "grid_headroom": 0.1548,
+    "power_cost": 0.1032,
+    "cooling_efficiency": 0.1032,
+    "water_availability": 0.0774,
+    "buildability": 0.0602,
+    "policy_climate": 0.0602,
+    "hazard": 0.043,
+    "gas_access": 0.0344,
+    "clean_power_potential": 0.0344,
+    "network_latency": 0.0172,
     "market_maturity": 0.0,
     "network_infrastructure": 0.0,
-    "logistics": 0.0
+    "logistics": 0.0,
+    "retirement_opportunity": 0.06,
+    "air_permitting": 0.05,
+    "grid_carbon": 0.03
    }
   },
   "edge_latency": {
    "label": "Edge / Latency-Sensitive",
    "description": "Proximity to population and exchanges dominates; raw power scale matters much less.",
    "weights": {
-    "network_latency": 0.28,
+    "network_latency": 0.2632,
     "generation_proximity": 0.0,
-    "market_maturity": 0.16,
-    "network_infrastructure": 0.12,
-    "grid_access": 0.12,
-    "power_cost": 0.08,
-    "buildability": 0.06,
-    "policy_climate": 0.06,
-    "hazard": 0.05,
-    "water_availability": 0.03,
-    "cooling_efficiency": 0.02,
-    "logistics": 0.02,
+    "market_maturity": 0.1504,
+    "network_infrastructure": 0.1128,
+    "grid_access": 0.1128,
+    "power_cost": 0.0752,
+    "buildability": 0.0564,
+    "policy_climate": 0.0564,
+    "hazard": 0.047,
+    "water_availability": 0.0282,
+    "cooling_efficiency": 0.0188,
+    "logistics": 0.0188,
     "grid_headroom": 0.0,
     "gas_access": 0.0,
-    "clean_power_potential": 0.0
+    "clean_power_potential": 0.0,
+    "retirement_opportunity": 0.02,
+    "air_permitting": 0.03,
+    "grid_carbon": 0.01
    }
   },
   "sustainable": {
    "label": "Low-Impact / Sustainability-Weighted",
    "description": "Penalizes water stress and rewards renewable resource and cool climate. For siting under corporate ESG constraints.",
    "weights": {
-    "water_availability": 0.18,
-    "cooling_efficiency": 0.16,
-    "clean_power_potential": 0.14,
-    "grid_access": 0.1,
-    "generation_proximity": 0.02,
-    "grid_headroom": 0.1,
-    "buildability": 0.08,
-    "hazard": 0.06,
-    "policy_climate": 0.06,
-    "power_cost": 0.04,
-    "network_latency": 0.04,
+    "water_availability": 0.144,
+    "cooling_efficiency": 0.128,
+    "clean_power_potential": 0.112,
+    "grid_access": 0.08,
+    "generation_proximity": 0.016,
+    "grid_headroom": 0.08,
+    "buildability": 0.064,
+    "hazard": 0.048,
+    "policy_climate": 0.048,
+    "power_cost": 0.032,
+    "network_latency": 0.032,
     "gas_access": 0.0,
-    "market_maturity": 0.02,
+    "market_maturity": 0.016,
     "network_infrastructure": 0.0,
-    "logistics": 0.0
+    "logistics": 0.0,
+    "retirement_opportunity": 0.04,
+    "air_permitting": 0.06,
+    "grid_carbon": 0.1
    }
   }
  },
@@ -298,6 +349,9 @@
   "buildability",
   "policy_climate",
   "hazard",
+  "retirement_opportunity",
+  "air_permitting",
+  "grid_carbon",
   "generation_proximity",
   "market_maturity",
   "gas_access",
@@ -343,14 +397,18 @@
    "multiplier": 0.25,
    "reason": "FEMA 100-year floodplain"
   },
+  "military_land": {
+   "multiplier": 0.0,
+   "reason": "DoD installation footprint. Applied to the boundary only, not the surroundings - proximity to a base is not inherently bad for a data center, being inside one is disqualifying."
+  },
   "land_cover_wetland": {
    "multiplier": 0.15,
    "reason": "Majority true wetland. Clean Water Act section 404 permitting through USACE makes a large pad impractical. Soft rather than hard: at 5 km2 a cell that is 60% wetland may still hold a buildable parcel. Open water is deliberately NOT included - riverfront is desirable for cooling, and including it scored an operating Columbia River campus at zero."
   }
  },
  "calibration": {
-  "positives_mean": 64.19,
-  "negatives_mean": 30.13,
+  "positives_mean": 65.21,
+  "negatives_mean": 31.26,
   "n_positive": 28,
   "n_negative": 15,
   "prior_strength": 0.45

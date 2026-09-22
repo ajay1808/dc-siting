@@ -157,3 +157,47 @@ logistics:
     Distance to interstate and primary highway. Transformers, chillers and
     gensets move by oversize road freight, and construction traffic has to
     get there too.
+
+retirement_opportunity:
+  source: EIA-860M, Retired generators sheet
+  source_url: https://www.eia.gov/electricity/data/eia860m/
+  detail: 2,526 retired plants, 295 GW raw capacity
+  means: >
+    Recently retired thermal generation nearby. A closing plant leaves an
+    energised point of interconnection with transmission already sized for its
+    former output, and re-using that POI is currently the fastest route to
+    large new load in the US.
+  caveat: >
+    Weighted by recency. A plant retired in the 1990s has usually had its
+    interconnection rights released, so old retirements count far less. This
+    does not confirm the POI is actually available -- that requires asking the
+    utility.
+
+air_permitting:
+  source: EPA Green Book nonattainment & maintenance areas
+  source_url: https://www.epa.gov/green-book
+  detail: 136 designated areas, weighted by pollutant and classification
+  means: >
+    Whether the 50-200 MW of backup generation a campus needs can be permitted.
+    Inside a nonattainment area that plant triggers New Source Review, may
+    require emission offsets purchased in the same airshed, and faces hard caps
+    on annual test-run hours. One of the most consequential siting constraints
+    that public maps almost never carry.
+  caveat: >
+    Weighted toward pollutants backup gensets actually emit (ozone precursors,
+    PM) over ones they barely touch (lead, SO2). Maintenance areas count at 45%
+    and revoked standards at 40% of the equivalent burden. Actual permitting
+    turns on local district rules this cannot see.
+
+grid_carbon:
+  source: EPA eGRID 2023, subregion output rates
+  source_url: https://www.epa.gov/egrid
+  detail: 27 subregions, 243–1,549 lb CO2e/MWh
+  means: >
+    Carbon intensity of the grid where the site sits, before any power purchase
+    agreement. Determines how much clean procurement a corporate commitment
+    will require, and increasingly whether a project is approvable at all.
+  caveat: >
+    Subregion averages, so intra-region variation is invisible. A PPA or on-site
+    generation can override this entirely, and marginal emissions (what an extra
+    MW actually causes) differ from these average rates.

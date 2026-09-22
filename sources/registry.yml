@@ -525,6 +525,114 @@ layers:
       # became indistinguishable. NRI runs to 93.
       clamp: [0, 95]
 
+  - id: air_permitting
+    name: Air Permitting Burden (EPA Nonattainment)
+    category: regulatory
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: polygon
+    auth: none
+    license: EPA / public domain
+    cadence: quarterly
+    note: >
+      A hyperscale campus needs 50-200 MW of diesel or gas backup generation.
+      Inside a nonattainment area that plant triggers New Source Review, may
+      require emission offsets bought in the same airshed, and faces hard caps
+      on annual test-run hours. Severity is weighted by classification
+      (Extreme..Marginal) and by whether the pollutant is one backup gensets
+      actually emit -- ozone precursors and PM matter, lead and SO2 barely do.
+      Maintenance areas count at 45% of the equivalent nonattainment burden.
+    endpoints:
+      - name: epa_greenbook_gis
+        url: https://services.arcgis.com/cJ9YHowT8TU7DUyn/ArcGIS/rest/services/Nonattainment_Areas_and_Designations/FeatureServer/0
+        format: arcgis_rest
+    scoring:
+      factor: air_permitting
+      direction: negative
+      method: normalize_invert
+      value_field: permit_difficulty
+      clamp: [0, 1]
+      # No designation means attainment, which is the BEST case, not missing
+      # data. Only ~9% of CONUS sits inside a designated area.
+      fill_missing: 0.0
+
+  - id: grid_carbon
+    name: Grid Carbon Intensity (eGRID)
+    category: energy
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: polygon
+    auth: none
+    license: EPA / public domain
+    cadence: annual
+    note: >
+      CO2-equivalent output rate of the grid subregion, lb/MWh, before any
+      power purchase agreement. Sets how much clean procurement a corporate
+      commitment needs and is increasingly part of whether a project is
+      approvable. Spans roughly 430 (WECC California) to 1,400+ lb/MWh.
+    endpoints:
+      - name: egrid_data
+        url: https://www.epa.gov/system/files/documents/2025-06/egrid2023_data_rev2.xlsx
+        format: xlsx
+      - name: egrid_subregions
+        url: https://services.arcgis.com/cJ9YHowT8TU7DUyn/arcgis/rest/services/eGRID2023_Subregions/FeatureServer/0
+        format: arcgis_rest
+    scoring:
+      factor: grid_carbon
+      direction: negative
+      method: normalize_invert
+      value_field: co2e_lb_mwh
+      clamp: [400, 1500]
+
+  - id: retirement_opportunity
+    name: Brownfield Interconnection (Retiring Generation)
+    category: energy
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: point
+    auth: none
+    license: US Federal / public domain
+    cadence: monthly
+    note: >
+      A retiring thermal plant leaves an energised point of interconnection
+      with transmission already sized for its former output. Re-using that POI
+      is currently the fastest route to large load in the US. Capacity is
+      weighted by recency -- a plant retired in the 1990s has usually had its
+      interconnection rights released.
+    endpoints:
+      - name: eia_860m_retired
+        url: https://www.eia.gov/electricity/data/eia860m/
+        format: xlsx
+    scoring:
+      factor: retirement_opportunity
+      direction: positive
+      method: capacity_within_radius
+      value_field: capacity_mw
+      radius_km: 45
+      clamp_total_mw: [0, 4000]
+
+  - id: military_land
+    name: Military Installations
+    category: jurisdiction
+    tier: easy
+    phase: 1
+    role: [display, exclude]
+    geometry: polygon
+    auth: none
+    license: US Federal / public domain
+    cadence: annual
+    note: >
+      Installation footprints are not developable. Applied to the footprint
+      only, not the surroundings: proximity to a base is not inherently bad for
+      a data center, being inside one is disqualifying.
+    endpoints:
+      - name: dod_installations
+        url: https://services.arcgis.com/xOi1kZaI0eWDREZv/arcgis/rest/services/Military_Installations_byBranch/FeatureServer/0
+        format: arcgis_rest
+
   - id: seismic
     name: Seismic Hazard (PGA 2% in 50yr)
     category: hazard

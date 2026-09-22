@@ -12,9 +12,9 @@ suitability, and explains *why* each cell scored what it did.
 |---|---|
 | Grid | H3 resolution 7 — **1,467,441 CONUS cells** (~5.16 km² each) |
 | Layers declared | 29 (all V1 = easy + medium tier) |
-| Layers ingested | 22 |
-| Factors live | **15 of 15** |
-| Tile payload | 71.7 MB across 3 archives, largest 48 MB |
+| Layers ingested | 26 |
+| Factors live | **18 of 18** |
+| Tile payload | 74.4 MB across 3 archives, largest 49 MB |
 
 Scores are labelled PROVISIONAL until cooling, water, land and policy land.
 The three heaviest factors (grid access, interconnection headroom, power
@@ -191,3 +191,27 @@ weighted score when weights change, but had no access to the exclusion
 multiplier — so Yosemite rendered as a developable ~16 instead of 0. The
 multiplier is now baked per cell as `xm` and applied in both the GPU
 expression and the JS recompute.
+
+
+## Energy-analyst gap review (2026-09-22)
+
+Four layers added, chosen for decision-changing value rather than novelty.
+Full gap analysis including paid options in [RECOMMENDATIONS.md](RECOMMENDATIONS.md).
+
+| Layer | Why |
+|---|---|
+| **Air permitting burden** | A campus needs 50-200 MW of backup generation. Inside a nonattainment area that plant triggers New Source Review, may need emission offsets bought in the same airshed, and faces caps on test-run hours. Weighted by classification and by whether the pollutant is one gensets actually emit. |
+| **Brownfield interconnection** | A retiring thermal plant leaves an energised POI with transmission already sized. Currently the fastest route to large load in the US. Weighted by recency. |
+| **Grid carbon intensity** | eGRID subregion CO2e/MWh before any PPA — 243 to 1,549 lb/MWh. |
+| **Military installations** | Footprints are not developable (hard exclusion, 1.1% of cells). |
+
+**The calibration independently upweighted air permitting** (0.040 → 0.067)
+without being told to, which is the case studies confirming it is real signal
+rather than a hypothesis.
+
+It also drove **cooling, water and IXP proximity to the weight floor**. That is
+worth stating plainly: real campuses sit in Prineville *and* Phoenix, so those
+factors do not discriminate between sites that actually got built. Either the
+case set is too coarse to resolve them, or they matter less to revealed siting
+behaviour than engineering intuition suggests. The floor keeps them in the
+model rather than letting a 43-point fit delete them.

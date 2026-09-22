@@ -1169,6 +1169,194 @@ def fetch_cooling_climate() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+
+# Ozone and PM nonattainment severity. A hyperscale campus needs 50-200 MW of
+# diesel or gas backup, and in a nonattainment area that plant is a major
+# permitting exposure: NSR/PSD review, emission offsets that must be bought in
+# the same airshed, and hard caps on annual test-run hours. This is one of the
+# most consequential siting constraints that almost no public map carries.
+NAA_SEVERITY = {          # 1.0 = worst permitting burden
+    "extreme": 1.00, "severe-17": 0.90, "severe-15": 0.90, "severe": 0.90,
+    "serious": 0.70, "moderate": 0.50, "marginal": 0.30, "submarginal": 0.25,
+    "subpart 1": 0.35, "incomplete data": 0.30, "primary": 0.60,
+    "moderate<=": 0.50, "": 0.40,
+}
+# Backup generators emit NOx (an ozone precursor) and PM. CO/SO2/Pb
+# nonattainment barely touches a data center.
+NAA_POLLUTANT = {"ozone": 1.00, "pm2.5": 0.95, "pm-2.5": 0.95, "pm10": 0.60,
+                 "pm-10": 0.60, "no2": 0.55, "so2": 0.30, "co": 0.25, "lead": 0.15}
+
+
+@fetcher("air_permitting")
+def fetch_air_permitting() -> pd.DataFrame:
+    """EPA nonattainment / maintenance areas, scored by permitting burden.
+
+    Emits `permit_difficulty` 0-1 per polygon: severity x pollutant relevance.
+    The scorer inverts it, so clean-air counties score high.
+    """
+    from shapely.geometry import shape as _shape
+
+    BASE = ("https://services.arcgis.com/cJ9YHowT8TU7DUyn/ArcGIS/rest/services"
+            "/Nonattainment_Areas_and_Designations/FeatureServer/0")
+    rows = []
+    for f in _arcgis_paged(BASE, out_fields="pollutant_name,area_name,classification,"
+                                            "current_status,state_name", page=200):
+        g = f.get("geometry")
+        if not g:
+            continue
+        try:
+            geom = _shape(g).buffer(0)
+        except Exception:
+            continue
+        if geom.is_empty:
+            continue
+        p = f.get("properties", {}) or {}
+        pol = str(p.get("pollutant_name", "")).strip().lower()
+        cls = str(p.get("classification", "")).strip().lower()
+        status = str(p.get("current_status", "")).strip().lower()
+        pw = next((v for k, v in NAA_POLLUTANT.items() if k in pol), 0.4)
+        sw = next((v for k, v in NAA_SEVERITY.items() if k and k in cls), 0.4)
+        # A maintenance area has attained the standard but still carries a
+        # maintenance plan, so the burden is real but much lighter.
+        if "maintenance" in status:
+            sw *= 0.45
+        # A revoked NAAQS leaves only anti-backsliding obligations, not live
+        # permitting exposure. Counting it at full weight overstated the
+        # burden across a lot of the Northeast and Midwest.
+        if "revoked" in status:
+            sw *= 0.40
+        geom = geom.simplify(0.004, preserve_topology=True)
+        if geom.is_empty:
+            continue
+        rows.append({"wkt": geom.wkt, "permit_difficulty": round(pw * sw, 4),
+                     "pollutant": p.get("pollutant_name"),
+                     "area": p.get("area_name"), "classification": p.get("classification"),
+                     "status": p.get("current_status")})
+    df = pd.DataFrame(rows)
+    print(f"    nonattainment/maintenance areas: {len(df)} | "
+          f"mean burden {df['permit_difficulty'].mean():.2f}")
+    return df
+
+
+EGRID_URL = ("https://www.epa.gov/system/files/documents/2025-06/"
+             "egrid2023_data_rev2.xlsx")
+
+
+@fetcher("grid_carbon")
+def fetch_grid_carbon() -> pd.DataFrame:
+    """EPA eGRID subregion CO2-equivalent output rate (lb/MWh).
+
+    The carbon intensity of grid power where the site sits, before any PPA.
+    Determines how much clean procurement a corporate commitment will require,
+    and increasingly whether a project is approvable at all. Ranges from about
+    430 lb/MWh (WECC California) to over 1,400 (upper Midwest coal).
+    """
+    import io as _io
+
+    from shapely.geometry import shape as _shape
+
+    RAW.mkdir(parents=True, exist_ok=True)
+    cache = RAW / "egrid2023.xlsx"
+    if not cache.exists() or cache.stat().st_size < 1_000_000:
+        print("    downloading eGRID2023 (~21 MB)")
+        req = urllib.request.Request(EGRID_URL, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=600) as r:
+            cache.write_bytes(r.read())
+    sr = pd.read_excel(cache, sheet_name="SRL23", skiprows=1, engine="openpyxl")
+    rate = {str(k).strip(): float(v) for k, v in
+            zip(sr["SUBRGN"], pd.to_numeric(sr["SRC2ERTA"], errors="coerce"))
+            if pd.notna(v)}
+
+    BASE = ("https://services.arcgis.com/cJ9YHowT8TU7DUyn/arcgis/rest/services"
+            "/eGRID2023_Subregions/FeatureServer/0")
+    rows = []
+    for f in _arcgis_paged(BASE, out_fields="Subregion", page=100):
+        g = f.get("geometry")
+        if not g:
+            continue
+        try:
+            geom = _shape(g).buffer(0)
+        except Exception:
+            continue
+        code = str((f.get("properties") or {}).get("Subregion", "")).strip()
+        if geom.is_empty or code not in rate:
+            continue
+        # Raw eGRID subregion geometry serialises to ~39 MB for 27 polygons.
+        geom = geom.simplify(0.01, preserve_topology=True)
+        if geom.is_empty:
+            continue
+        rows.append({"wkt": geom.wkt, "subregion": code,
+                     "co2e_lb_mwh": rate[code]})
+    df = pd.DataFrame(rows)
+    print(f"    eGRID subregions matched: {len(df)} | "
+          f"CO2e lb/MWh {df['co2e_lb_mwh'].min():.0f}-{df['co2e_lb_mwh'].max():.0f}")
+    return df
+
+
+@fetcher("retirement_opportunity")
+def fetch_retirement_opportunity() -> pd.DataFrame:
+    """Retired and retiring generators, as brownfield interconnection capacity.
+
+    A retiring thermal plant leaves behind an energised point of interconnection
+    with transmission already sized for its former output. Re-using that POI is
+    currently the fastest route to large load in the US, so recent and imminent
+    retirements are an asset rather than a liability. Weighted toward the recent
+    ones: a plant retired in 1998 has usually had its interconnection released.
+    """
+    df = _eia860m_sheet("Retired")
+    cap = pd.to_numeric(df.get("Nameplate Capacity (MW)"), errors="coerce").fillna(0)
+    yr = pd.to_numeric(df.get("Retirement Year"), errors="coerce")
+    recency = ((yr - 2015) / 12).clip(lower=0.15, upper=1.0).fillna(0.2)
+    out = pd.DataFrame({
+        "lat": df["lat"], "lng": df["lng"],
+        "capacity_mw": (cap * recency).round(2),
+        "raw_mw": cap, "retirement_year": yr,
+        "plant_name": df.get("Plant Name"), "technology": df.get("Technology"),
+        "plant_id": df.get("Plant ID"),
+    })
+    out = out.groupby("plant_id", as_index=False).agg(
+        lat=("lat", "first"), lng=("lng", "first"),
+        capacity_mw=("capacity_mw", "sum"), raw_mw=("raw_mw", "sum"),
+        retirement_year=("retirement_year", "max"),
+        plant_name=("plant_name", "first"), technology=("technology", "first"))
+    print(f"    retired plants: {len(out)} | recency-weighted MW "
+          f"{out.capacity_mw.sum():,.0f} of {out.raw_mw.sum():,.0f} raw")
+    return out
+
+
+@fetcher("military_land")
+def fetch_military_land() -> pd.DataFrame:
+    """DoD installation boundaries.
+
+    Not developable, and the surrounding area carries airspace, security and
+    encroachment considerations. Carried as an exclusion on the footprint
+    itself rather than a penalty on the neighbourhood -- proximity to a base is
+    not inherently bad for a data center, being inside one is disqualifying.
+    """
+    from shapely.geometry import shape as _shape
+
+    BASE = ("https://services.arcgis.com/xOi1kZaI0eWDREZv/arcgis/rest/services"
+            "/Military_Installations_byBranch/FeatureServer/0")
+    rows = []
+    for f in _arcgis_paged(BASE, out_fields="SITE_NAME,COMPONENT,STATE_TERR",
+                           bbox=CONUS_BBOX, page=200):
+        g = f.get("geometry")
+        if not g:
+            continue
+        try:
+            geom = _shape(g).buffer(0).simplify(0.002, preserve_topology=True)
+        except Exception:
+            continue
+        if geom.is_empty:
+            continue
+        p = f.get("properties", {}) or {}
+        rows.append({"wkt": geom.wkt, "name": p.get("SITE_NAME"),
+                     "branch": p.get("COMPONENT")})
+    df = pd.DataFrame(rows)
+    print(f"    military installations: {len(df)}")
+    return df
+
+
 # ---------------------------------------------------------------------------
 # NETWORK
 # ---------------------------------------------------------------------------

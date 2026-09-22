@@ -188,6 +188,43 @@ def polygon_join(df, grid, value_field=None):
         out[ok] = frac[row[ok], col[ok]]
         return out
 
+    # Rasterise the VALUE, same as the boolean path. Exact point-in-polygon
+    # is fine for many small polygons but pathological for a few enormous
+    # ones: eGRID's 27 continent-scale subregions make the STRtree bbox
+    # prefilter useless, so nearly every one of 1.47M points runs a full
+    # geometry test. Burning values at ~440 m cannot change the answer at a
+    # 5 km2 cell and finishes in seconds.
+    from rasterio.features import rasterize as _rasterize
+    from rasterio.transform import from_origin as _from_origin
+
+    FINE = 0.004
+    west, south, east, north = -125.0, 24.0, -66.0, 50.0
+    w = int((east - west) / FINE)
+    h = int((north - south) / FINE)
+    NODATA = np.float32(-9.99e30)
+    # Ascending so that where polygons overlap (air_permitting designates the
+    # same city for several pollutants) the WORST value is the one that lands.
+    order = np.argsort(np.asarray(vals))
+    shapes = ((geoms[i], float(vals[i])) for i in order)
+    burned = _rasterize(shapes, out_shape=(h, w),
+                        transform=_from_origin(west, north, FINE, FINE),
+                        fill=float(NODATA), dtype="float32")
+    inv = ~_from_origin(west, north, FINE, FINE)
+    lng = grid["lng"].to_numpy(); lat = grid["lat"].to_numpy()
+    col = np.floor(inv.a * lng + inv.b * lat + inv.c).astype(np.int64)
+    row = np.floor(inv.d * lng + inv.e * lat + inv.f).astype(np.int64)
+    ok = (row >= 0) & (row < h) & (col >= 0) & (col < w)
+    out = np.full(len(lng), np.nan)
+    sampled = np.full(len(lng), np.nan)
+    sampled[ok] = burned[row[ok], col[ok]]
+    good = np.isfinite(sampled) & (sampled > float(NODATA) / 2)
+    out[good] = sampled[good]
+    return out
+
+
+def _unused_exact_polygon_join(geoms, vals, grid):
+    """Kept for reference: the exact point-in-polygon path this replaced."""
+    from shapely.strtree import STRtree
     tree = STRtree(geoms)
     pts = _cell_points(grid)
     ci, gi = tree.query(pts, predicate="within")
@@ -282,7 +319,17 @@ def compute_layer_subscore(layer, cells_xy, grid):
         out = polygon_join(df, grid, value_field=vf)
         if out is None:
             return None
-        print(f"      (polygon join covered {np.isfinite(out).mean():.1%} of cells)")
+        cov = np.isfinite(out).mean()
+        # For some layers ABSENCE is meaningful, not missing. A cell in no
+        # nonattainment area is in attainment -- the best possible value -- and
+        # leaving it null dropped the factor for 91% of the country.
+        fill = spec.get("fill_missing")
+        if fill is not None:
+            out = np.where(np.isfinite(out), out, float(fill))
+            print(f"      (polygon join covered {cov:.1%}; "
+                  f"remainder filled with {fill})")
+        else:
+            print(f"      (polygon join covered {cov:.1%} of cells)")
         method = spec.get("method", "normalize")
         return _normalize(out, spec.get("clamp"), method == "normalize_invert")
 
