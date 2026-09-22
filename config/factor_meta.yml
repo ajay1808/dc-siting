@@ -1,203 +1,244 @@
-# Per-factor provenance and plain-English meaning, surfaced in the UI so a
-# score is never an unexplained number. One entry per factor in scoring.yml.
-
+# Per-factor provenance and plain-English meaning, surfaced in the UI.
 grid_access:
   source: HIFLD Open (transmission) + OpenStreetMap (substations)
   source_url: https://hifld-geoplatform.opendata.arcgis.com/
   detail: 52,244 transmission lines, 77,748 substations
-  means: >
-    Distance to transmission lines and substations, weighted by voltage. A
-    500 kV line counts far more than a 69 kV one. This is the single biggest
-    constraint on whether a large load can connect at all.
-  caveat: >
-    HIFLD's national substation layer is no longer public, so substations come
-    from OpenStreetMap; 78% carry a voltage tag.
+  means: 'Distance to transmission lines and substations, weighted by voltage. A 500 kV line counts far
+    more than a 69 kV one. This is the single biggest constraint on whether a large load can connect at
+    all.
 
+    '
+  caveat: 'HIFLD''s national substation layer is no longer public, so substations come from OpenStreetMap;
+    78% carry a voltage tag.
+
+    '
 grid_headroom:
-  source: EIA-860M, Planned generation sheet
-  source_url: https://www.eia.gov/electricity/data/eia860m/
-  detail: 1,582 planned generator additions
-  means: >
-    Generation capacity already planned nearby. Proxies whether new load can
-    actually be energised this decade rather than waiting years in a queue.
-  caveat: >
-    SUBSTITUTE. The real measure is the interconnection queue (LBNL "Queued
-    Up"), which blocks scripted access. Planned additions understate queue
-    contention.
-
+  source: ISO interconnection queues (gridstatus) + EIA-860M planned generation
+  source_url: https://github.com/gridstatus/gridstatus
+  detail: 13,390 queued projects across MISO, SPP, NYISO, ISO-NE, CAISO, ERCOT (654 GW active); PJM with
+    a free key
+  means: 'Generation queued or planned nearby: supply that could serve co-located load, and a signal that
+    planners expect injection there. The ISO queues are consolidated directly rather than through LBNL,
+    which blocks scripted access.'
+  caveat: This is the GENERATION queue. The large-LOAD queue -- what actually decides a campus -- is mostly
+    not published. Non-ISO regions (Southeast, much of the West) have no queue data and fall back to EIA
+    planned additions.
 power_cost:
-  source: EIA v2 API, retail sales (industrial sector)
-  source_url: https://www.eia.gov/opendata/
-  detail: 2025 industrial price, 49 states
-  means: >
-    Industrial electricity price in cents/kWh. Power is the dominant operating
-    cost of a data center, so this compounds over the life of the facility.
-  caveat: >
-    Joined at STATE level. Utility service territory polygons are in the
-    restricted HIFLD set, so intrastate spread is not captured.
-
+  source: EIA-861 industrial sales by utility, on HIFLD service territories; state average as fallback
+  source_url: https://www.eia.gov/electricity/data/eia861/
+  detail: 1,070 priced utility territories; state price where no territory matches
+  means: Average realised industrial price of the retail utility serving the cell. Replaces the state
+    average, which hid the spread between utilities in the same state.
+  caveat: An average industrial price, not a negotiated large-load tariff. Overlapping territories take
+    the higher price (conservative). Matters less in retail-choice states, where Nodal Wholesale Price
+    is the better guide.
 cooling_efficiency:
-  source: NOAA NCEI 1991-2020 Climate Normals
-  source_url: https://www.ncei.noaa.gov/access/us-climate-normals/
-  detail: 7,007 CONUS weather stations
-  means: >
-    Annual cooling degree days, interpolated between stations. Cooler climates
-    allow more free cooling, which lowers both PUE and water consumption.
-  caveat: >
-    SUBSTITUTE for ASHRAE design wet-bulb, which is paywalled. CDD ignores
-    humidity, so a dry and a humid site with equal CDD score the same when
-    they should not.
-
+  source: NOAA/USGS CMRA county projections (RCP4.5, 2036-2065); NOAA station normals as fallback
+  source_url: https://resilience.climate.gov/
+  detail: 3,233 counties, LOCA-downscaled CMIP5
+  means: Projected mid-century cooling degree days -- the climate the campus will actually operate in,
+    not the 1991-2020 average.
+  caveat: Degree-days, not design wet-bulb, so humidity is still invisible. RCP4.5 is a middle scenario;
+    RCP8.5 values are carried in the data for comparison.
 network_latency:
-  source: PeeringDB
+  source: PeeringDB interconnection facilities + submarine cable landing stations
   source_url: https://www.peeringdb.com/
-  detail: 1,353 US interconnection facilities
-  means: >
-    Proximity to interconnection facilities, weighted by how many networks
-    are present. Matters enormously for edge and inference workloads, barely
-    at all for training clusters.
-
+  detail: 1,353 facilities; CONUS cable landings
+  means: Proximity to where networks interconnect, and to transoceanic cable landings for internationally-connected
+    sites.
+  caveat: Landings matter only to a specific class of site; most inland campuses will score on IXPs alone.
 water_availability:
-  source: WRI Aqueduct 4.0 + EPA wastewater facilities
+  source: WRI Aqueduct 4.0 (baseline + 2050), US Drought Monitor, EPA ECHO wastewater plants
   source_url: https://www.wri.org/data/aqueduct-global-maps-40-data
-  detail: 4,267 CONUS hydrological basins
-  means: >
-    Baseline water stress in the containing basin. Evaporative cooling needs
-    water, and a water-stressed basin means permitting risk and local
-    opposition regardless of what the utility will sell you.
-
+  detail: 4,267 basins; 10 years of weekly drought maps; major municipal wastewater plants by flow
+  means: 'Averages four views of water: stress today, stress projected for 2050, drought frequency over
+    the last decade, and treated wastewater nearby -- the preferred cooling source because it does not
+    compete with drinking water.'
+  caveat: No groundwater or county withdrawal data yet (USGS has no scriptable download).
 buildability:
   source: USGS 3DEP elevation + NLCD 2021 land cover
   source_url: https://www.mrlc.gov/data
   detail: CONUS DEM plus 30 m land cover, areal fractions
-  means: >
-    Terrain slope and land cover combined. Scored on development cost and
-    permitting risk: already-serviced open land is best, high-intensity urban
-    is worst (no room), cropland scores below pasture because prime-farmland
-    conversion is heavily contested, and wetlands are excluded outright.
-  caveat: >
-    Slope is sampled at ~1.4 km, so it screens out mountains but says nothing
-    about whether a specific parcel is flat.
+  means: 'Terrain slope and land cover combined. Scored on development cost and permitting risk: already-serviced
+    open land is best, high-intensity urban is worst (no room), cropland scores below pasture because
+    prime-farmland conversion is heavily contested, and wetlands are excluded outright.
 
+    '
+  caveat: 'Slope is sampled at ~1.4 km, so it screens out mountains but says nothing about whether a specific
+    parcel is flat.
+
+    '
 policy_climate:
   source: LLM research pass, every claim source-linked
   source_url: https://github.com/ajay1808/dc-siting/tree/main/data/raw/policy
   detail: all 49 CONUS states, 5.1 of 6 fields cited on average
-  means: >
-    Tax exemptions, abatements, permitting speed, active moratoria, who pays
-    for interconnection upgrades, and cooling-water restrictions.
-  caveat: >
-    Assembled by an LLM with mandatory citations; any field without a real
-    source URL is dropped rather than guessed. Verify before relying on it
-    for a decision.
+  means: 'Tax exemptions, abatements, permitting speed, active moratoria, who pays for interconnection
+    upgrades, and cooling-water restrictions.
 
+    '
+  caveat: 'Assembled by an LLM with mandatory citations; any field without a real source URL is dropped
+    rather than guessed. Verify before relying on it for a decision.
+
+    '
 hazard:
   source: FEMA National Risk Index
   source_url: https://hazards.fema.gov/nri/
   detail: 3,232 counties, 9 weighted hazard types
-  means: >
-    Earthquake, flood, wildfire, hurricane, landslide, ice storm, heat wave
-    and tornado risk. Siting-relevant hazards (quake, flood, fire) are
-    weighted above design-solvable ones (tornado, hail) -- tornado alley
+  means: 'Earthquake, flood, wildfire, hurricane, landslide, ice storm, heat wave and tornado risk. Siting-relevant
+    hazards (quake, flood, fire) are weighted above design-solvable ones (tornado, hail) -- tornado alley
     hosts plenty of campuses.
 
+    '
 generation_proximity:
   source: EIA-860M, Operating sheet
   source_url: https://www.eia.gov/electricity/data/eia860m/
   detail: 14,433 operating power plants
-  means: >
-    Installed generating capacity nearby. Overlaps grid access by design, but
-    a plant next door is not the same thing as a high-voltage line.
+  means: 'Installed generating capacity nearby. Overlaps grid access by design, but a plant next door
+    is not the same thing as a high-voltage line.
 
+    '
 market_maturity:
   source: OpenStreetMap
   source_url: https://www.openstreetmap.org/
   detail: 1,764 tagged US data centers
-  means: >
-    Existing data center density. Scored as an optimum rather than
-    more-is-better: some neighbours prove the fundamentals work, too many
-    mean you are competing for the same substation.
+  means: 'Existing data center density. Scored as an optimum rather than more-is-better: some neighbours
+    prove the fundamentals work, too many mean you are competing for the same substation.
 
+    '
 gas_access:
   source: EIA natural gas pipelines
   source_url: https://atlas.eia.gov/
   detail: 33,806 pipeline segments, sampled every 4 km
-  means: >
-    Distance to gas transmission. Increasingly decisive because on-site or
-    bridge generation is how large loads get energised ahead of a grid upgrade.
+  means: 'Distance to gas transmission. Increasingly decisive because on-site or bridge generation is
+    how large loads get energised ahead of a grid upgrade.
 
+    '
 clean_power_potential:
   source: NLR (formerly NREL) solar resource API
   source_url: https://developer.nlr.gov/docs/solar/nsrdb/
   detail: sampled on a coarse grid, interpolated
-  means: >
-    Annual solar irradiance. Proxies how cheaply on-site or nearby renewable
-    generation can be added to meet a clean-energy commitment.
-  caveat: >
-    Solar only. Wind resource is too spatially spiky to survive this
-    interpolation and uses a separate, heavier API.
+  means: 'Annual solar irradiance. Proxies how cheaply on-site or nearby renewable generation can be added
+    to meet a clean-energy commitment.
 
+    '
+  caveat: 'Solar only. Wind resource is too spatially spiky to survive this interpolation and uses a separate,
+    heavier API.
+
+    '
 network_infrastructure:
   source: Census ACS 2023, table B28002
   source_url: https://www.census.gov/programs-surveys/acs
   detail: 3,222 counties
-  means: >
-    Household internet subscription rate, as a proxy for whether real network
-    infrastructure reaches the area.
-  caveat: >
-    SUBSTITUTE. FCC's Broadband Data Collection returns 403/405 on every
-    public endpoint. ACS measures adoption, not availability, so it
-    understates areas with good infrastructure and low uptake.
+  means: 'Household internet subscription rate, as a proxy for whether real network infrastructure reaches
+    the area.
 
+    '
+  caveat: 'SUBSTITUTE. FCC''s Broadband Data Collection returns 403/405 on every public endpoint. ACS
+    measures adoption, not availability, so it understates areas with good infrastructure and low uptake.
+
+    '
 logistics:
   source: Census TIGER 2024 primary roads
   source_url: https://www.census.gov/geographies/mapping-files/time-series/geo/tiger-line-file.html
   detail: interstates and primary arterials, weighted by class
-  means: >
-    Distance to interstate and primary highway. Transformers, chillers and
-    gensets move by oversize road freight, and construction traffic has to
-    get there too.
+  means: 'Distance to interstate and primary highway. Transformers, chillers and gensets move by oversize
+    road freight, and construction traffic has to get there too.
 
+    '
 retirement_opportunity:
   source: EIA-860M, Retired generators sheet
   source_url: https://www.eia.gov/electricity/data/eia860m/
   detail: 2,526 retired plants, 295 GW raw capacity
-  means: >
-    Recently retired thermal generation nearby. A closing plant leaves an
-    energised point of interconnection with transmission already sized for its
-    former output, and re-using that POI is currently the fastest route to
-    large new load in the US.
-  caveat: >
-    Weighted by recency. A plant retired in the 1990s has usually had its
-    interconnection rights released, so old retirements count far less. This
-    does not confirm the POI is actually available -- that requires asking the
-    utility.
+  means: 'Recently retired thermal generation nearby. A closing plant leaves an energised point of interconnection
+    with transmission already sized for its former output, and re-using that POI is currently the fastest
+    route to large new load in the US.
 
+    '
+  caveat: 'Weighted by recency. A plant retired in the 1990s has usually had its interconnection rights
+    released, so old retirements count far less. This does not confirm the POI is actually available --
+    that requires asking the utility.
+
+    '
 air_permitting:
   source: EPA Green Book nonattainment & maintenance areas
   source_url: https://www.epa.gov/green-book
   detail: 136 designated areas, weighted by pollutant and classification
-  means: >
-    Whether the 50-200 MW of backup generation a campus needs can be permitted.
-    Inside a nonattainment area that plant triggers New Source Review, may
-    require emission offsets purchased in the same airshed, and faces hard caps
-    on annual test-run hours. One of the most consequential siting constraints
-    that public maps almost never carry.
-  caveat: >
-    Weighted toward pollutants backup gensets actually emit (ozone precursors,
-    PM) over ones they barely touch (lead, SO2). Maintenance areas count at 45%
-    and revoked standards at 40% of the equivalent burden. Actual permitting
-    turns on local district rules this cannot see.
+  means: 'Whether the 50-200 MW of backup generation a campus needs can be permitted. Inside a nonattainment
+    area that plant triggers New Source Review, may require emission offsets purchased in the same airshed,
+    and faces hard caps on annual test-run hours. One of the most consequential siting constraints that
+    public maps almost never carry.
 
+    '
+  caveat: 'Weighted toward pollutants backup gensets actually emit (ozone precursors, PM) over ones they
+    barely touch (lead, SO2). Maintenance areas count at 45% and revoked standards at 40% of the equivalent
+    burden. Actual permitting turns on local district rules this cannot see.
+
+    '
 grid_carbon:
   source: EPA eGRID 2023, subregion output rates
   source_url: https://www.epa.gov/egrid
   detail: 27 subregions, 243–1,549 lb CO2e/MWh
-  means: >
-    Carbon intensity of the grid where the site sits, before any power purchase
-    agreement. Determines how much clean procurement a corporate commitment
-    will require, and increasingly whether a project is approvable at all.
-  caveat: >
-    Subregion averages, so intra-region variation is invisible. A PPA or on-site
-    generation can override this entirely, and marginal emissions (what an extra
-    MW actually causes) differ from these average rates.
+  means: 'Carbon intensity of the grid where the site sits, before any power purchase agreement. Determines
+    how much clean procurement a corporate commitment will require, and increasingly whether a project
+    is approvable at all.
+
+    '
+  caveat: 'Subregion averages, so intra-region variation is invisible. A PPA or on-site generation can
+    override this entirely, and marginal emissions (what an extra MW actually causes) differ from these
+    average rates.
+
+    '
+interconnection_friction:
+  source: ISO interconnection queues via gridstatus
+  source_url: https://github.com/gridstatus/gridstatus
+  detail: Withdrawal rate per county, shrunk toward the ISO-wide rate
+  means: How often projects here give up. High withdrawal rates are the fingerprint of expensive network-upgrade
+    assignments and long studies.
+  caveat: Shrunk with a prior of 8 projects, so a county with two projects cannot read as 0% or 100%.
+    ISO regions only.
+wholesale_price:
+  source: CAISO OASIS day-ahead LMP (all nodes) + CAISO price-contour node locations
+  source_url: http://oasis.caiso.com/
+  detail: ~15k CAISO and Western EIM nodes, 24 sample days across the past year
+  means: Average day-ahead nodal price near the site. Basis inside one state routinely exceeds the difference
+    between states, which is why a state or utility average is a crude instrument.
+  caveat: West only (CAISO + WEIM footprint). Other ISOs need a source of node coordinates; cells more
+    than 60 km from a node get no value rather than an extrapolated one.
+transmission_congestion:
+  source: CAISO OASIS congestion component of LMP
+  source_url: http://oasis.caiso.com/
+  detail: Signed average congestion component, same nodes and days
+  means: Negative means an export-constrained pocket -- surplus generation that cannot get out -- where
+    new load relieves the constraint and buys cheap power. Positive means an import-constrained load pocket,
+    where new load makes congestion worse and pays for it.
+  caveat: West only. A 24-day sample captures structural patterns, not rare outage-driven events.
+extreme_heat:
+  source: NOAA/USGS CMRA county projections (RCP4.5, 2036-2065)
+  source_url: https://resilience.climate.gov/
+  detail: Projected days above 95F
+  means: Peak heat rather than average heat. It sizes the cooling plant for the design day and coincides
+    with grid peak -- the hours a campus is likeliest to be asked to curtail.
+  caveat: Dry-bulb temperature; humid heat is harder on evaporative cooling than this shows.
+fiber_corridors:
+  source: BTS NTAD Class I rail + Census TIGER interstates
+  source_url: https://geodata.bts.gov/
+  detail: Class I main lines and interstates
+  means: Long-haul fiber runs overwhelmingly inside rail and highway rights-of-way (Durairajan et al.,
+    InterTubes, SIGCOMM 2015). Proximity to those corridors is the best open proxy for long-haul routes.
+  caveat: A PROXY. It says where fiber usually runs, not where it does. Carrier route data is paid (TeleGeography,
+    Zayo).
+land_cost:
+  source: FHFA land prices by county (Davis, Larson, Oliner & Shui)
+  source_url: https://www.fhfa.gov/research/papers/wp1901
+  detail: Land value per acre, 2024 release
+  means: Where land is expensive. Used as a relative signal only.
+  caveat: Residential single-family land values. Campuses buy industrial or agricultural acreage that
+    is usually far cheaper per acre.
+labor:
+  source: Census County Business Patterns 2022
+  source_url: https://www.census.gov/programs-surveys/cbp.html
+  detail: Electrical contractors, line construction, mechanical contractors, hosting workforce
+  means: Skilled trades within commuting distance (80 km). Electricians are the binding trade on most
+    builds -- a large campus can need several hundred on site at peak.
+  caveat: Employment by where establishments are, not where workers live. Small counties are suppressed
+    in CBP, so rural areas slightly under-count.

@@ -3,7 +3,7 @@
  "factors": {
   "grid_access": {
    "label": "Transmission & Substation Access",
-   "weight": 0.1089,
+   "weight": 0.0633,
    "inputs": [
     "transmission_lines",
     "substations"
@@ -17,73 +17,79 @@
   },
   "grid_headroom": {
    "label": "Interconnection Headroom",
-   "weight": 0.1558,
+   "weight": 0.0983,
    "inputs": [
-    "interconnection_queue"
+    "interconnection_queue",
+    "iso_queue"
    ],
-   "source": "EIA-860M, Planned generation sheet",
-   "source_url": "https://www.eia.gov/electricity/data/eia860m/",
-   "detail": "1,582 planned generator additions",
-   "means": "Generation capacity already planned nearby. Proxies whether new load can actually be energised this decade rather than waiting years in a queue.",
-   "caveat": "SUBSTITUTE. The real measure is the interconnection queue (LBNL \"Queued Up\"), which blocks scripted access. Planned additions understate queue contention.",
+   "source": "ISO interconnection queues (gridstatus) + EIA-860M planned generation",
+   "source_url": "https://github.com/gridstatus/gridstatus",
+   "detail": "13,390 queued projects across MISO, SPP, NYISO, ISO-NE, CAISO, ERCOT (654 GW active); PJM with a free key",
+   "means": "Generation queued or planned nearby: supply that could serve co-located load, and a signal that planners expect injection there. The ISO queues are consolidated directly rather than through LBNL, which blocks scripted access.",
+   "caveat": "This is the GENERATION queue. The large-LOAD queue -- what actually decides a campus -- is mostly not published. Non-ISO regions (Southeast, much of the West) have no queue data and fall back to EIA planned additions.",
    "live": true
   },
   "power_cost": {
    "label": "Industrial Power Cost",
-   "weight": 0.1433,
+   "weight": 0.0767,
    "inputs": [
+    "utility_price",
     "retail_power_price"
    ],
-   "source": "EIA v2 API, retail sales (industrial sector)",
-   "source_url": "https://www.eia.gov/opendata/",
-   "detail": "2025 industrial price, 49 states",
-   "means": "Industrial electricity price in cents/kWh. Power is the dominant operating cost of a data center, so this compounds over the life of the facility.",
-   "caveat": "Joined at STATE level. Utility service territory polygons are in the restricted HIFLD set, so intrastate spread is not captured.",
+   "source": "EIA-861 industrial sales by utility, on HIFLD service territories; state average as fallback",
+   "source_url": "https://www.eia.gov/electricity/data/eia861/",
+   "detail": "1,070 priced utility territories; state price where no territory matches",
+   "means": "Average realised industrial price of the retail utility serving the cell. Replaces the state average, which hid the spread between utilities in the same state.",
+   "caveat": "An average industrial price, not a negotiated large-load tariff. Overlapping territories take the higher price (conservative). Matters less in retail-choice states, where Nodal Wholesale Price is the better guide.",
    "live": true
   },
   "cooling_efficiency": {
    "label": "Cooling Climate",
    "weight": 0.015,
    "inputs": [
+    "climate_future",
     "cooling_climate"
    ],
-   "source": "NOAA NCEI 1991-2020 Climate Normals",
-   "source_url": "https://www.ncei.noaa.gov/access/us-climate-normals/",
-   "detail": "7,007 CONUS weather stations",
-   "means": "Annual cooling degree days, interpolated between stations. Cooler climates allow more free cooling, which lowers both PUE and water consumption.",
-   "caveat": "SUBSTITUTE for ASHRAE design wet-bulb, which is paywalled. CDD ignores humidity, so a dry and a humid site with equal CDD score the same when they should not.",
+   "source": "NOAA/USGS CMRA county projections (RCP4.5, 2036-2065); NOAA station normals as fallback",
+   "source_url": "https://resilience.climate.gov/",
+   "detail": "3,233 counties, LOCA-downscaled CMIP5",
+   "means": "Projected mid-century cooling degree days -- the climate the campus will actually operate in, not the 1991-2020 average.",
+   "caveat": "Degree-days, not design wet-bulb, so humidity is still invisible. RCP4.5 is a middle scenario; RCP8.5 values are carried in the data for comparison.",
    "live": true
   },
   "network_latency": {
    "label": "IXP Proximity",
    "weight": 0.015,
    "inputs": [
-    "ixp"
+    "ixp",
+    "cable_landings"
    ],
-   "source": "PeeringDB",
+   "source": "PeeringDB interconnection facilities + submarine cable landing stations",
    "source_url": "https://www.peeringdb.com/",
-   "detail": "1,353 US interconnection facilities",
-   "means": "Proximity to interconnection facilities, weighted by how many networks are present. Matters enormously for edge and inference workloads, barely at all for training clusters.",
-   "caveat": null,
+   "detail": "1,353 facilities; CONUS cable landings",
+   "means": "Proximity to where networks interconnect, and to transoceanic cable landings for internationally-connected sites.",
+   "caveat": "Landings matter only to a specific class of site; most inland campuses will score on IXPs alone.",
    "live": true
   },
   "water_availability": {
    "label": "Water Availability",
-   "weight": 0.0163,
+   "weight": 0.015,
    "inputs": [
     "water_stress",
-    "water_treatment"
+    "water_stress_future",
+    "drought_frequency",
+    "reclaimed_water"
    ],
-   "source": "WRI Aqueduct 4.0 + EPA wastewater facilities",
+   "source": "WRI Aqueduct 4.0 (baseline + 2050), US Drought Monitor, EPA ECHO wastewater plants",
    "source_url": "https://www.wri.org/data/aqueduct-global-maps-40-data",
-   "detail": "4,267 CONUS hydrological basins",
-   "means": "Baseline water stress in the containing basin. Evaporative cooling needs water, and a water-stressed basin means permitting risk and local opposition regardless of what the utility will sell you.",
-   "caveat": null,
+   "detail": "4,267 basins; 10 years of weekly drought maps; major municipal wastewater plants by flow",
+   "means": "Averages four views of water: stress today, stress projected for 2050, drought frequency over the last decade, and treated wastewater nearby -- the preferred cooling source because it does not compete with drinking water.",
+   "caveat": "No groundwater or county withdrawal data yet (USGS has no scriptable download).",
    "live": true
   },
   "buildability": {
    "label": "Terrain & Land Cover",
-   "weight": 0.1317,
+   "weight": 0.1108,
    "inputs": [
     "slope",
     "land_cover"
@@ -97,7 +103,7 @@
   },
   "policy_climate": {
    "label": "Policy & Incentive Climate",
-   "weight": 0.0726,
+   "weight": 0.0504,
    "inputs": [
     "policy_climate"
    ],
@@ -110,7 +116,7 @@
   },
   "hazard": {
    "label": "Natural Hazard Exposure",
-   "weight": 0.0342,
+   "weight": 0.015,
    "inputs": [
     "hazard_nri",
     "seismic",
@@ -125,7 +131,7 @@
   },
   "retirement_opportunity": {
    "label": "Brownfield Interconnection",
-   "weight": 0.0161,
+   "weight": 0.015,
    "inputs": [
     "retirement_opportunity"
    ],
@@ -138,7 +144,7 @@
   },
   "air_permitting": {
    "label": "Air Permitting Headroom",
-   "weight": 0.0674,
+   "weight": 0.0375,
    "inputs": [
     "air_permitting"
    ],
@@ -162,9 +168,101 @@
    "caveat": "Subregion averages, so intra-region variation is invisible. A PPA or on-site generation can override this entirely, and marginal emissions (what an extra MW actually causes) differ from these average rates.",
    "live": true
   },
+  "interconnection_friction": {
+   "label": "Interconnection Friction",
+   "weight": 0.0678,
+   "inputs": [
+    "iso_queue_friction"
+   ],
+   "source": "ISO interconnection queues via gridstatus",
+   "source_url": "https://github.com/gridstatus/gridstatus",
+   "detail": "Withdrawal rate per county, shrunk toward the ISO-wide rate",
+   "means": "How often projects here give up. High withdrawal rates are the fingerprint of expensive network-upgrade assignments and long studies.",
+   "caveat": "Shrunk with a prior of 8 projects, so a county with two projects cannot read as 0% or 100%. ISO regions only.",
+   "live": true
+  },
+  "wholesale_price": {
+   "label": "Nodal Wholesale Price",
+   "weight": 0.0548,
+   "inputs": [
+    "nodal_lmp"
+   ],
+   "source": "CAISO OASIS day-ahead LMP (all nodes) + CAISO price-contour node locations",
+   "source_url": "http://oasis.caiso.com/",
+   "detail": "~15k CAISO and Western EIM nodes, 24 sample days across the past year",
+   "means": "Average day-ahead nodal price near the site. Basis inside one state routinely exceeds the difference between states, which is why a state or utility average is a crude instrument.",
+   "caveat": "West only (CAISO + WEIM footprint). Other ISOs need a source of node coordinates; cells more than 60 km from a node get no value rather than an extrapolated one.",
+   "live": true
+  },
+  "transmission_congestion": {
+   "label": "Transmission Congestion",
+   "weight": 0.0466,
+   "inputs": [
+    "nodal_congestion"
+   ],
+   "source": "CAISO OASIS congestion component of LMP",
+   "source_url": "http://oasis.caiso.com/",
+   "detail": "Signed average congestion component, same nodes and days",
+   "means": "Negative means an export-constrained pocket -- surplus generation that cannot get out -- where new load relieves the constraint and buys cheap power. Positive means an import-constrained load pocket, where new load makes congestion worse and pays for it.",
+   "caveat": "West only. A 24-day sample captures structural patterns, not rare outage-driven events.",
+   "live": true
+  },
+  "extreme_heat": {
+   "label": "Extreme Heat 2050",
+   "weight": 0.015,
+   "inputs": [
+    "heat_days"
+   ],
+   "source": "NOAA/USGS CMRA county projections (RCP4.5, 2036-2065)",
+   "source_url": "https://resilience.climate.gov/",
+   "detail": "Projected days above 95F",
+   "means": "Peak heat rather than average heat. It sizes the cooling plant for the design day and coincides with grid peak -- the hours a campus is likeliest to be asked to curtail.",
+   "caveat": "Dry-bulb temperature; humid heat is harder on evaporative cooling than this shows.",
+   "live": true
+  },
+  "fiber_corridors": {
+   "label": "Long-Haul Fiber Corridors",
+   "weight": 0.0341,
+   "inputs": [
+    "rail_corridors",
+    "rail_highway"
+   ],
+   "source": "BTS NTAD Class I rail + Census TIGER interstates",
+   "source_url": "https://geodata.bts.gov/",
+   "detail": "Class I main lines and interstates",
+   "means": "Long-haul fiber runs overwhelmingly inside rail and highway rights-of-way (Durairajan et al., InterTubes, SIGCOMM 2015). Proximity to those corridors is the best open proxy for long-haul routes.",
+   "caveat": "A PROXY. It says where fiber usually runs, not where it does. Carrier route data is paid (TeleGeography, Zayo).",
+   "live": true
+  },
+  "land_cost": {
+   "label": "Land Cost",
+   "weight": 0.0466,
+   "inputs": [
+    "land_cost"
+   ],
+   "source": "FHFA land prices by county (Davis, Larson, Oliner & Shui)",
+   "source_url": "https://www.fhfa.gov/research/papers/wp1901",
+   "detail": "Land value per acre, 2024 release",
+   "means": "Where land is expensive. Used as a relative signal only.",
+   "caveat": "Residential single-family land values. Campuses buy industrial or agricultural acreage that is usually far cheaper per acre.",
+   "live": true
+  },
+  "labor": {
+   "label": "Skilled Labor Pool",
+   "weight": 0.0336,
+   "inputs": [
+    "labor_pool"
+   ],
+   "source": "Census County Business Patterns 2022",
+   "source_url": "https://www.census.gov/programs-surveys/cbp.html",
+   "detail": "Electrical contractors, line construction, mechanical contractors, hosting workforce",
+   "means": "Skilled trades within commuting distance (80 km). Electricians are the binding trade on most builds -- a large campus can need several hundred on site at peak.",
+   "caveat": "Employment by where establishments are, not where workers live. Small counties are suppressed in CBP, so rural areas slightly under-count.",
+   "live": true
+  },
   "generation_proximity": {
    "label": "Generation Proximity",
-   "weight": 0.0553,
+   "weight": 0.0491,
    "inputs": [
     "power_plants"
    ],
@@ -177,7 +275,7 @@
   },
   "market_maturity": {
    "label": "Existing DC Cluster",
-   "weight": 0.0566,
+   "weight": 0.0428,
    "inputs": [
     "existing_datacenters"
    ],
@@ -190,7 +288,7 @@
   },
   "gas_access": {
    "label": "Natural Gas Access",
-   "weight": 0.0352,
+   "weight": 0.0375,
    "inputs": [
     "gas_pipelines"
    ],
@@ -216,7 +314,7 @@
   },
   "network_infrastructure": {
    "label": "Broadband Infrastructure",
-   "weight": 0.0155,
+   "weight": 0.015,
    "inputs": [
     "broadband_served"
    ],
@@ -229,7 +327,7 @@
   },
   "logistics": {
    "label": "Highway Access",
-   "weight": 0.0311,
+   "weight": 0.015,
    "inputs": [
     "rail_highway"
    ],
@@ -246,96 +344,124 @@
    "label": "Balanced (calibrated)",
    "description": "Fitted against real campuses and known-bad sites.",
    "weights": {
-    "grid_access": 0.1089,
-    "grid_headroom": 0.1558,
-    "power_cost": 0.1433,
+    "grid_access": 0.0633,
+    "grid_headroom": 0.0983,
+    "power_cost": 0.0767,
     "cooling_efficiency": 0.015,
     "network_latency": 0.015,
-    "water_availability": 0.0163,
-    "buildability": 0.1317,
-    "policy_climate": 0.0726,
-    "hazard": 0.0342,
-    "retirement_opportunity": 0.0161,
-    "air_permitting": 0.0674,
+    "water_availability": 0.015,
+    "buildability": 0.1108,
+    "policy_climate": 0.0504,
+    "hazard": 0.015,
+    "retirement_opportunity": 0.015,
+    "air_permitting": 0.0375,
     "grid_carbon": 0.015,
-    "generation_proximity": 0.0553,
-    "market_maturity": 0.0566,
-    "gas_access": 0.0352,
+    "interconnection_friction": 0.0678,
+    "wholesale_price": 0.0548,
+    "transmission_congestion": 0.0466,
+    "extreme_heat": 0.015,
+    "fiber_corridors": 0.0341,
+    "land_cost": 0.0466,
+    "labor": 0.0336,
+    "generation_proximity": 0.0491,
+    "market_maturity": 0.0428,
+    "gas_access": 0.0375,
     "clean_power_potential": 0.015,
-    "network_infrastructure": 0.0155,
-    "logistics": 0.0311
+    "network_infrastructure": 0.015,
+    "logistics": 0.015
    }
   },
   "ai_training": {
    "label": "AI / HPC Training Campus",
    "description": "Power-dominant. Latency is nearly irrelevant; cooling and interconnection headroom dominate.",
    "weights": {
-    "grid_access": 0.1376,
-    "generation_proximity": 0.0344,
-    "grid_headroom": 0.1548,
-    "power_cost": 0.1032,
-    "cooling_efficiency": 0.1032,
-    "water_availability": 0.0774,
-    "buildability": 0.0602,
-    "policy_climate": 0.0602,
-    "hazard": 0.043,
-    "gas_access": 0.0344,
-    "clean_power_potential": 0.0344,
-    "network_latency": 0.0172,
+    "grid_access": 0.1032,
+    "generation_proximity": 0.0258,
+    "grid_headroom": 0.1161,
+    "power_cost": 0.0774,
+    "cooling_efficiency": 0.0774,
+    "water_availability": 0.058,
+    "buildability": 0.0451,
+    "policy_climate": 0.0451,
+    "hazard": 0.0322,
+    "gas_access": 0.0258,
+    "clean_power_potential": 0.0258,
+    "network_latency": 0.0129,
     "market_maturity": 0.0,
     "network_infrastructure": 0.0,
     "logistics": 0.0,
-    "retirement_opportunity": 0.06,
-    "air_permitting": 0.05,
-    "grid_carbon": 0.03
+    "retirement_opportunity": 0.045,
+    "air_permitting": 0.0375,
+    "grid_carbon": 0.0225,
+    "interconnection_friction": 0.06,
+    "wholesale_price": 0.04,
+    "transmission_congestion": 0.04,
+    "extreme_heat": 0.03,
+    "fiber_corridors": 0.01,
+    "land_cost": 0.03,
+    "labor": 0.04
    }
   },
   "edge_latency": {
    "label": "Edge / Latency-Sensitive",
    "description": "Proximity to population and exchanges dominates; raw power scale matters much less.",
    "weights": {
-    "network_latency": 0.2632,
+    "network_latency": 0.2079,
     "generation_proximity": 0.0,
-    "market_maturity": 0.1504,
-    "network_infrastructure": 0.1128,
-    "grid_access": 0.1128,
-    "power_cost": 0.0752,
-    "buildability": 0.0564,
-    "policy_climate": 0.0564,
-    "hazard": 0.047,
-    "water_availability": 0.0282,
-    "cooling_efficiency": 0.0188,
-    "logistics": 0.0188,
+    "market_maturity": 0.1188,
+    "network_infrastructure": 0.0891,
+    "grid_access": 0.0891,
+    "power_cost": 0.0594,
+    "buildability": 0.0446,
+    "policy_climate": 0.0446,
+    "hazard": 0.0371,
+    "water_availability": 0.0223,
+    "cooling_efficiency": 0.0149,
+    "logistics": 0.0149,
     "grid_headroom": 0.0,
     "gas_access": 0.0,
     "clean_power_potential": 0.0,
-    "retirement_opportunity": 0.02,
-    "air_permitting": 0.03,
-    "grid_carbon": 0.01
+    "retirement_opportunity": 0.0158,
+    "air_permitting": 0.0237,
+    "grid_carbon": 0.0079,
+    "interconnection_friction": 0.02,
+    "wholesale_price": 0.02,
+    "transmission_congestion": 0.01,
+    "extreme_heat": 0.01,
+    "fiber_corridors": 0.08,
+    "land_cost": 0.04,
+    "labor": 0.03
    }
   },
   "sustainable": {
    "label": "Low-Impact / Sustainability-Weighted",
    "description": "Penalizes water stress and rewards renewable resource and cool climate. For siting under corporate ESG constraints.",
    "weights": {
-    "water_availability": 0.144,
-    "cooling_efficiency": 0.128,
-    "clean_power_potential": 0.112,
-    "grid_access": 0.08,
-    "generation_proximity": 0.016,
-    "grid_headroom": 0.08,
-    "buildability": 0.064,
-    "hazard": 0.048,
-    "policy_climate": 0.048,
-    "power_cost": 0.032,
-    "network_latency": 0.032,
+    "water_availability": 0.1166,
+    "cooling_efficiency": 0.1037,
+    "clean_power_potential": 0.0907,
+    "grid_access": 0.0648,
+    "generation_proximity": 0.013,
+    "grid_headroom": 0.0648,
+    "buildability": 0.0518,
+    "hazard": 0.0389,
+    "policy_climate": 0.0389,
+    "power_cost": 0.0259,
+    "network_latency": 0.0259,
     "gas_access": 0.0,
-    "market_maturity": 0.016,
+    "market_maturity": 0.013,
     "network_infrastructure": 0.0,
     "logistics": 0.0,
-    "retirement_opportunity": 0.04,
-    "air_permitting": 0.06,
-    "grid_carbon": 0.1
+    "retirement_opportunity": 0.0324,
+    "air_permitting": 0.0486,
+    "grid_carbon": 0.081,
+    "interconnection_friction": 0.03,
+    "wholesale_price": 0.02,
+    "transmission_congestion": 0.03,
+    "extreme_heat": 0.06,
+    "fiber_corridors": 0.01,
+    "land_cost": 0.02,
+    "labor": 0.02
    }
   }
  },
@@ -352,6 +478,13 @@
   "retirement_opportunity",
   "air_permitting",
   "grid_carbon",
+  "interconnection_friction",
+  "wholesale_price",
+  "transmission_congestion",
+  "extreme_heat",
+  "fiber_corridors",
+  "land_cost",
+  "labor",
   "generation_proximity",
   "market_maturity",
   "gas_access",
@@ -407,8 +540,8 @@
   }
  },
  "calibration": {
-  "positives_mean": 65.21,
-  "negatives_mean": 31.26,
+  "positives_mean": 64.7,
+  "negatives_mean": 32.58,
   "n_positive": 28,
   "n_negative": 15,
   "prior_strength": 0.45

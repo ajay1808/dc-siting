@@ -1,25 +1,32 @@
 calibrated_weights:
-  grid_access: 0.1089
-  grid_headroom: 0.1558
-  power_cost: 0.1433
+  grid_access: 0.0633
+  grid_headroom: 0.0983
+  power_cost: 0.0767
   cooling_efficiency: 0.015
   network_latency: 0.015
-  water_availability: 0.0163
-  buildability: 0.1317
-  policy_climate: 0.0726
-  hazard: 0.0342
-  retirement_opportunity: 0.0161
-  air_permitting: 0.0674
+  water_availability: 0.015
+  buildability: 0.1108
+  policy_climate: 0.0504
+  hazard: 0.015
+  retirement_opportunity: 0.015
+  air_permitting: 0.0375
   grid_carbon: 0.015
-  generation_proximity: 0.0553
-  market_maturity: 0.0566
-  gas_access: 0.0352
+  interconnection_friction: 0.0678
+  wholesale_price: 0.0548
+  transmission_congestion: 0.0466
+  extreme_heat: 0.015
+  fiber_corridors: 0.0341
+  land_cost: 0.0466
+  labor: 0.0336
+  generation_proximity: 0.0491
+  market_maturity: 0.0428
+  gas_access: 0.0375
   clean_power_potential: 0.015
-  network_infrastructure: 0.0155
-  logistics: 0.0311
+  network_infrastructure: 0.015
+  logistics: 0.015
 fit:
-  positives_mean: 65.21
-  negatives_mean: 31.26
+  positives_mean: 64.7
+  negatives_mean: 32.58
   n_positive: 28
   n_negative: 15
   prior_strength: 0.45

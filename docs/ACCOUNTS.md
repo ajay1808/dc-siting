@@ -139,3 +139,29 @@ with **zero egress fees**, which is the standard way to host PMTiles.
 Everything else in the registry — Climate TRACE, WRI Aqueduct, FEMA, USGS,
 NPS/PAD-US, USFWS, BLM, FCC, NOAA, LBNL, OSM, EPA, BTS — needs **no account
 at all**.
+
+
+---
+
+## 9. PJM Data Miner  *(recommended, 5 min — completes the interconnection queue)*
+PJM is the one ISO whose queue `gridstatus` cannot fetch without a key. PJM
+covers Virginia, Ohio, Pennsylvania, Illinois (ComEd), New Jersey and more —
+including Loudoun County, the densest data center market in the world.
+
+1. Register at <https://dataminer2.pjm.com> (free).
+2. Account → API key.
+3. `PJM_API_KEY=` in `.env`, then `python pipeline/ingest.py iso_queue`.
+
+## 10. LBNL "Queued Up"  *(optional, manual, annual)*
+Fills the non-ISO Southeast and West, which no ISO covers.
+LBNL blocks scripted downloads, so:
+
+1. Download the latest data file from <https://emp.lbl.gov/queues> in a browser.
+2. Put it in `data/raw/lbnl/`.
+3. Ask for the parser to be wired against that file — its schema changes
+   between annual releases, so it should be read from the real file rather
+   than guessed.
+
+## 11. Parcels  *(optional)*
+No account needed to use parcel upload. If you buy data, Regrid's export
+columns are recognised automatically. See RECOMMENDATIONS.md.

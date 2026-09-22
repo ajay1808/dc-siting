@@ -81,59 +81,63 @@ factors:
 
   grid_access:
     label: Transmission & Substation Access
-    weight: 0.1089
+    weight: 0.0633
     inputs: [transmission_lines, substations]
     combine: max          # nearest good interconnect governs
 
   grid_headroom:
     label: Interconnection Headroom
-    weight: 0.1558
-    inputs: [interconnection_queue]
+    weight: 0.0983
+    inputs: [interconnection_queue, iso_queue]
+    combine: max
     note: Queue capacity nearby is the strongest available proxy for whether
           new large load can actually be energized this decade.
 
   power_cost:
     label: Industrial Power Cost
-    weight: 0.1433
-    inputs: [retail_power_price]
+    weight: 0.0767
+    inputs: [utility_price, retail_power_price]
+    combine: first
 
   cooling_efficiency:
     label: Cooling Climate
     weight: 0.0150
-    inputs: [cooling_climate]
+    inputs: [climate_future, cooling_climate]
+    combine: first
     note: Design wet-bulb sets achievable PUE and annual water draw.
 
   network_latency:
     label: IXP Proximity
     weight: 0.0150
-    inputs: [ixp]
+    inputs: [ixp, cable_landings]
+    combine: max
 
   water_availability:
     label: Water Availability
-    weight: 0.0163
-    inputs: [water_stress, water_treatment]
+    weight: 0.0150
+    inputs: [water_stress, water_stress_future, drought_frequency, reclaimed_water]
     combine: mean
 
   buildability:
     label: Terrain & Land Cover
-    weight: 0.1317
+    weight: 0.1108
     inputs: [slope, land_cover]
     combine: product      # steep AND forested is much worse than either alone
 
   policy_climate:
     label: Policy & Incentive Climate
-    weight: 0.0726
+    weight: 0.0504
     inputs: [policy_climate]
 
   hazard:
     label: Natural Hazard Exposure
-    weight: 0.0342
+    weight: 0.0150
     inputs: [hazard_nri, seismic, wildfire_risk]
     combine: min          # worst hazard governs; manual rasters refine NRI
 
   retirement_opportunity:
     label: Brownfield Interconnection
-    weight: 0.0161
+    weight: 0.0150
     inputs: [retirement_opportunity]
     note: Retiring thermal plants leave an energised point of interconnection
           with transmission already sized. Currently the fastest route to
@@ -141,7 +145,7 @@ factors:
 
   air_permitting:
     label: Air Permitting Headroom
-    weight: 0.0674
+    weight: 0.0375
     inputs: [air_permitting]
     note: Nonattainment status governs how hard it is to permit the 50-200 MW
           of backup generation a campus needs. Rarely mapped, often decisive.
@@ -153,21 +157,68 @@ factors:
     note: eGRID subregion CO2e per MWh before any PPA. Sets how much clean
           procurement a corporate commitment will require.
 
+  interconnection_friction:
+    label: Interconnection Friction
+    weight: 0.0678
+    inputs: [iso_queue_friction]
+    note: Queue withdrawal rate, shrunk toward the ISO average. High withdrawal is
+          the fingerprint of expensive network upgrades.
+
+  wholesale_price:
+    label: Nodal Wholesale Price
+    weight: 0.0548
+    inputs: [nodal_lmp]
+    note: Average day-ahead LMP at nearby nodes. What a campus pays in a
+          retail-choice market or under a wholesale-indexed deal. West only.
+
+  transmission_congestion:
+    label: Transmission Congestion
+    weight: 0.0466
+    inputs: [nodal_congestion]
+    note: Signed congestion component. Export-constrained pockets (negative)
+          are where new load is most welcome. West only.
+
+  extreme_heat:
+    label: Extreme Heat 2050
+    weight: 0.0150
+    inputs: [heat_days]
+    note: Projected days above 95F mid-century. Sizes the cooling plant for the
+          design day and coincides with grid peak.
+
+  fiber_corridors:
+    label: Long-Haul Fiber Corridors
+    weight: 0.0341
+    inputs: [rail_corridors, rail_highway]
+    combine: max
+    note: Class I rail and interstate rights-of-way, where long-haul fiber runs.
+
+  land_cost:
+    label: Land Cost
+    weight: 0.0466
+    inputs: [land_cost]
+    note: FHFA land value per acre. Relative signal, residential basis.
+
+  labor:
+    label: Skilled Labor Pool
+    weight: 0.0336
+    inputs: [labor_pool]
+    note: Electricians, line crews, mechanical trades and existing DC workforce
+          within commuting distance.
   generation_proximity:
     label: Generation Proximity
-    weight: 0.0553
+    weight: 0.0491
     inputs: [power_plants]
     note: Nearby installed capacity. Overlaps grid_access by design but is
           distinct - a plant next door is not the same as a 500kV line.
 
   market_maturity:
     label: Existing DC Cluster
-    weight: 0.0566
+    weight: 0.0428
     inputs: [existing_datacenters]
 
   gas_access:
     label: Natural Gas Access
-    weight: 0.0352
+    weight: 0.0375
     inputs: [gas_pipelines]
 
   clean_power_potential:
@@ -177,12 +228,12 @@ factors:
 
   network_infrastructure:
     label: Broadband Infrastructure
-    weight: 0.0155
+    weight: 0.0150
     inputs: [broadband_served]
 
   logistics:
     label: Highway Access
-    weight: 0.0311
+    weight: 0.0150
     inputs: [rail_highway]
 
 # --- alternative weightings ---------------------------------------------------
@@ -195,69 +246,90 @@ profiles:
     description: Power-dominant. Latency is nearly irrelevant; cooling and
                  interconnection headroom dominate.
     weights:
-      grid_access: 0.1376
-      generation_proximity: 0.0344
-      grid_headroom: 0.1548
-      power_cost: 0.1032
-      cooling_efficiency: 0.1032
-      water_availability: 0.0774
-      buildability: 0.0602
-      policy_climate: 0.0602
-      hazard: 0.043
-      gas_access: 0.0344
-      clean_power_potential: 0.0344
-      network_latency: 0.0172
+      grid_access: 0.1032
+      generation_proximity: 0.0258
+      grid_headroom: 0.1161
+      power_cost: 0.0774
+      cooling_efficiency: 0.0774
+      water_availability: 0.058
+      buildability: 0.0451
+      policy_climate: 0.0451
+      hazard: 0.0322
+      gas_access: 0.0258
+      clean_power_potential: 0.0258
+      network_latency: 0.0129
       market_maturity: 0.0
       network_infrastructure: 0.0
       logistics: 0.0
-      retirement_opportunity: 0.06
-      air_permitting: 0.05
-      grid_carbon: 0.03
+      retirement_opportunity: 0.045
+      air_permitting: 0.0375
+      grid_carbon: 0.0225
+      interconnection_friction: 0.06
+      wholesale_price: 0.04
+      transmission_congestion: 0.04
+      extreme_heat: 0.03
+      fiber_corridors: 0.01
+      land_cost: 0.03
+      labor: 0.04
 
   edge_latency:
     label: Edge / Latency-Sensitive
     description: Proximity to population and exchanges dominates; raw power
                  scale matters much less.
     weights:
-      network_latency: 0.2632
+      network_latency: 0.2079
       generation_proximity: 0.0
-      market_maturity: 0.1504
-      network_infrastructure: 0.1128
-      grid_access: 0.1128
-      power_cost: 0.0752
-      buildability: 0.0564
-      policy_climate: 0.0564
-      hazard: 0.047
-      water_availability: 0.0282
-      cooling_efficiency: 0.0188
-      logistics: 0.0188
+      market_maturity: 0.1188
+      network_infrastructure: 0.0891
+      grid_access: 0.0891
+      power_cost: 0.0594
+      buildability: 0.0446
+      policy_climate: 0.0446
+      hazard: 0.0371
+      water_availability: 0.0223
+      cooling_efficiency: 0.0149
+      logistics: 0.0149
       grid_headroom: 0.0
       gas_access: 0.0
       clean_power_potential: 0.0
-      retirement_opportunity: 0.02
-      air_permitting: 0.03
-      grid_carbon: 0.01
+      retirement_opportunity: 0.0158
+      air_permitting: 0.0237
+      grid_carbon: 0.0079
+      interconnection_friction: 0.02
+      wholesale_price: 0.02
+      transmission_congestion: 0.01
+      extreme_heat: 0.01
+      fiber_corridors: 0.08
+      land_cost: 0.04
+      labor: 0.03
 
   sustainable:
     label: Low-Impact / Sustainability-Weighted
     description: Penalizes water stress and rewards renewable resource and
                  cool climate. For siting under corporate ESG constraints.
     weights:
-      water_availability: 0.144
-      cooling_efficiency: 0.128
-      clean_power_potential: 0.112
-      grid_access: 0.08
-      generation_proximity: 0.016
-      grid_headroom: 0.08
-      buildability: 0.064
-      hazard: 0.048
-      policy_climate: 0.048
-      power_cost: 0.032
-      network_latency: 0.032
+      water_availability: 0.1166
+      cooling_efficiency: 0.1037
+      clean_power_potential: 0.0907
+      grid_access: 0.0648
+      generation_proximity: 0.013
+      grid_headroom: 0.0648
+      buildability: 0.0518
+      hazard: 0.0389
+      policy_climate: 0.0389
+      power_cost: 0.0259
+      network_latency: 0.0259
       gas_access: 0.0
-      market_maturity: 0.016
+      market_maturity: 0.013
       network_infrastructure: 0.0
       logistics: 0.0
-      retirement_opportunity: 0.04
-      air_permitting: 0.06
-      grid_carbon: 0.1
+      retirement_opportunity: 0.0324
+      air_permitting: 0.0486
+      grid_carbon: 0.081
+      interconnection_friction: 0.03
+      wholesale_price: 0.02
+      transmission_congestion: 0.03
+      extreme_heat: 0.06
+      fiber_corridors: 0.01
+      land_cost: 0.02
+      labor: 0.02

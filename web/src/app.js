@@ -51,7 +51,9 @@ const map = new maplibregl.Map({
         paint:{'fill-color':'#4da3ff','fill-opacity':0.18}},
       {id:'sel-line',type:'line',source:'sel',
         paint:{'line-color':'#4da3ff','line-width':1.4}},
-      {id:'site-pt',type:'circle',source:'sites',
+      {id:'site-poly',type:'line',source:'sites',filter:['!=',['geometry-type'],'Point'],
+        paint:{'line-color':'#f7f14e','line-width':1.6}},
+      {id:'site-pt',type:'circle',source:'sites',filter:['==',['geometry-type'],'Point'],
         paint:{'circle-radius':5,'circle-color':'#f7f14e',
                'circle-stroke-color':'#000','circle-stroke-width':1}},
       {id:'hi',type:'line',source:'score_r7','source-layer':'score',
@@ -363,39 +365,91 @@ function parseCSV(text){
   }
   return out;
 }
+// Parcel-aware. Polygons are treated as parcels: real acreage, every H3 cell
+// the parcel covers, and its attributes (owner, APN, land use, value) carried
+// through to ranking and export. Points behave as before.
+const OWNER=['owner','OWNER','ownername','OWNNAME','owner_name','OWNER1','mail_name'];
+const APN=['parcelnumb','APN','apn','PARCELID','PARCEL_ID','PIN','pin','parcel_id','PARCELNO'];
+const ACRE=['ll_gisacre','gisacre','GISACRE','ACRES','acres','deeded_acres','ACREAGE','CALC_ACRE'];
+const USE=['usedesc','LANDUSE','landuse','USE_DESC','zoning','ZONING','lbcs_activity_desc','PROP_CLASS'];
+const VAL=['parval','TOTVAL','total_value','TOTAL_VAL','landval','LANDVAL','APPRAISED','ASSESSED'];
+const pick=(p,keys)=>{ for(const k of keys) if(p[k]!==undefined&&p[k]!==null&&p[k]!=='') return p[k]; return null; };
+
+function ringArea(ring){                       // spherical excess, m²
+  const R=6378137, rad=Math.PI/180; let a=0;
+  for(let i=0;i<ring.length-1;i++){
+    const [x1,y1]=ring[i],[x2,y2]=ring[i+1];
+    a+=(x2-x1)*rad*(2+Math.sin(y1*rad)+Math.sin(y2*rad));
+  }
+  return Math.abs(a*R*R/2);
+}
+function geomAcres(g){
+  const polys=g.type==='Polygon'?[g.coordinates]:g.type==='MultiPolygon'?g.coordinates:[];
+  let m2=0;
+  for(const poly of polys){ m2+=ringArea(poly[0]); for(const h of poly.slice(1)) m2-=ringArea(h); }
+  return m2/4046.8564224;
+}
+function geomCentroid(g){
+  const cs=JSON.stringify(g.coordinates).match(/-?\d+\.?\d*(?:e-?\d+)?/g).map(Number);
+  const xs=[],ys=[]; for(let k=0;k<cs.length-1;k+=2){ xs.push(cs[k]); ys.push(cs[k+1]); }
+  return [xs.reduce((a,b)=>a+b,0)/xs.length, ys.reduce((a,b)=>a+b,0)/ys.length];
+}
 function fromGeoJSON(gj){
   const out=[];
   const feats=gj.type==='FeatureCollection'?gj.features:[gj];
   for(const [i,f] of feats.entries()){
     const g=f.geometry; if(!g) continue;
-    let lat,lng;
-    if(g.type==='Point'){ [lng,lat]=g.coordinates; }
-    else {
-      // Centroid of the coordinate hull is enough to locate a parcel at 5 km².
-      const cs=JSON.stringify(g.coordinates).match(/-?\d+\.?\d*/g).map(Number);
-      const xs=[],ys=[];
-      for(let k=0;k<cs.length-1;k+=2){ xs.push(cs[k]); ys.push(cs[k+1]); }
-      lng=xs.reduce((a,b)=>a+b,0)/xs.length; lat=ys.reduce((a,b)=>a+b,0)/ys.length;
-    }
-    if(!isFinite(lat)||!isFinite(lng)) continue;
     const p=f.properties||{};
-    out.push({name:p.name||p.Name||p.NAME||p.site||p.id||`Site ${i+1}`,lat,lng});
+    let lat,lng,acres=null,poly=null;
+    if(g.type==='Point'){ [lng,lat]=g.coordinates; }
+    else if(g.type==='Polygon'||g.type==='MultiPolygon'){
+      [lng,lat]=geomCentroid(g); poly=g;
+      const stated=+pick(p,ACRE);
+      acres=isFinite(stated)&&stated>0?stated:geomAcres(g);
+    } else continue;
+    if(!isFinite(lat)||!isFinite(lng)) continue;
+    out.push({name:pick(p,APN)||p.name||p.Name||p.NAME||p.site||p.id||`Site ${i+1}`,
+      lat,lng,acres,poly,owner:pick(p,OWNER),use:pick(p,USE),value:pick(p,VAL),attrs:p});
   }
   return out;
 }
 
-// Look up a cell by flying to it. queryRenderedFeatures only sees loaded
-// tiles, so each site needs its tile on screen; r7 starts at zoom 9.
-async function lookupCell(lat,lng){
-  map.jumpTo({center:[lng,lat],zoom:9.6});
+async function settle(){
   await new Promise(res=>{
     let done=false;
     const t=setTimeout(()=>{if(!done){done=true;map.off('idle',h);res();}},4000);
     const h=()=>{if(!done){done=true;clearTimeout(t);map.off('idle',h);res();}};
     map.on('idle',h);
   });
+}
+// queryRenderedFeatures only sees loaded tiles, so each site needs its tile
+// on screen; r7 starts at zoom 9.
+async function lookupCell(lat,lng){
+  map.jumpTo({center:[lng,lat],zoom:9.6}); await settle();
   const f=map.queryRenderedFeatures(map.project([lng,lat]),{layers:['cells_r7']});
   return f[0]?f[0].properties:null;
+}
+// A parcel larger than one hex (~1,275 acres) is scored as the AREA-WEIGHTED
+// mean of every cell whose centre falls inside it, not its centroid cell.
+async function lookupParcel(site){
+  map.jumpTo({center:[site.lng,site.lat],zoom:9.6}); await settle();
+  let cells=[];
+  try{ cells=h3.polygonToCells(site.poly.type==='Polygon'?site.poly.coordinates:
+         site.poly.coordinates[0],7,true); }catch(_){}
+  if(cells.length<=1){ const p=await lookupCell(site.lat,site.lng); return {props:p,n:1}; }
+  const found=[];
+  for(const c of cells.slice(0,40)){
+    const [la,lo]=h3.cellToLatLng(c);
+    const f=map.queryRenderedFeatures(map.project([lo,la]),{layers:['cells_r7']});
+    if(f[0]) found.push(f[0].properties);
+  }
+  if(!found.length) return {props:await lookupCell(site.lat,site.lng),n:1};
+  const agg={...found[0]};
+  for(const k of [...live,'xm']){
+    const v=found.map(p=>p[k]).filter(x=>x!==undefined);
+    if(v.length) agg[k]=v.reduce((a,b)=>a+b,0)/v.length;
+  }
+  return {props:agg,n:found.length};
 }
 
 document.getElementById('site-file').onchange=async ev=>{
@@ -414,23 +468,31 @@ document.getElementById('site-file').onchange=async ev=>{
     } else {
       raw=fromGeoJSON(JSON.parse(await file.text()));
     }
+    const read=raw.length;
     raw=raw.filter(s=>s.lat>=24&&s.lat<=50&&s.lng>=-125&&s.lng<=-66);
-    if(!raw.length) throw new Error('no usable points inside CONUS');
-    const CAP=60;
-    const capped=raw.length>CAP;
+    const minAc=+document.getElementById('min-acres').value||0;
+    const parcels=raw.some(s=>s.poly);
+    if(parcels&&minAc>0) raw=raw.filter(s=>(s.acres??0)>=minAc);
+    if(!raw.length) throw new Error(parcels&&minAc>0
+      ?`no parcels of ${minAc}+ acres inside CONUS`:'no usable features inside CONUS');
+    // Largest first, so a cap keeps the parcels most likely to matter.
+    if(parcels) raw.sort((a,b)=>(b.acres??0)-(a.acres??0));
+    const CAP=parcels?150:60, eligible=raw.length, capped=eligible>CAP;
     raw=raw.slice(0,CAP);
     sites=[];
     for(const [i,s] of raw.entries()){
       st.textContent=`scoring ${i+1}/${raw.length}…`;
-      const p=await lookupCell(s.lat,s.lng);
-      sites.push({...s,props:p});
+      if(s.poly){ const r=await lookupParcel(s); sites.push({...s,props:r.props,nCells:r.n}); }
+      else sites.push({...s,props:await lookupCell(s.lat,s.lng),nCells:1});
     }
     map.jumpTo(view);
     map.getSource('sites').setData({type:'FeatureCollection',
       features:sites.map(s=>({type:'Feature',properties:{name:s.name},
-        geometry:{type:'Point',coordinates:[s.lng,s.lat]}}))});
-    st.textContent=`${sites.length} site${sites.length>1?'s':''} scored`+
-      (capped?` (capped at ${CAP} of ${raw.length + (capped?0:0)})`:'');
+        geometry:s.poly||{type:'Point',coordinates:[s.lng,s.lat]}}))});
+    st.textContent=`${sites.length} ${parcels?'parcel':'site'}${sites.length>1?'s':''} scored`
+      +(parcels&&minAc>0?` (${minAc}+ acres)`:'')
+      +(capped?` — largest ${CAP} of ${eligible} eligible`:'')
+      +(read>eligible&&!(parcels&&minAc>0)?` · ${read-eligible} outside CONUS dropped`:'');
     rerankSites();
   }catch(err){ st.innerHTML=`<span class="warn">${err.message}</span>`; }
 };
@@ -439,48 +501,64 @@ function rankedSites(){
   return sites.map(s=>({...s,score:s.props?scoreOf(s.props):null}))
     .sort((a,b)=>(b.score??-1)-(a.score??-1));
 }
+const fmtAc=a=>a==null?'':(a>=100?Math.round(a):a.toFixed(1))+' ac';
 function rerankSites(){
   if(!sites.length) return;
   const r=rankedSites();
   document.getElementById('site-list').innerHTML=r.map((s,i)=>
-    `<div class="srow" data-lat="${s.lat}" data-lng="${s.lng}">
-       <span class="rank">${i+1}</span><span class="nm">${s.name}</span>
+    `<div class="srow" data-lat="${s.lat}" data-lng="${s.lng}" title="${[
+       s.owner&&('Owner: '+s.owner), s.use&&('Use: '+s.use), s.value&&('Value: '+s.value),
+       s.nCells>1&&(`Averaged over ${s.nCells} cells`)].filter(Boolean).join('\n')}">
+       <span class="rank">${i+1}</span>
+       <span class="nm">${s.name}${s.acres!=null?` <span style="color:var(--muted)">· ${fmtAc(s.acres)}</span>`:''}
+         ${s.owner?`<br><span style="color:var(--muted);font-size:10px">${String(s.owner).slice(0,40)}</span>`:''}</span>
        <span class="sc">${s.score==null?'—':Math.round(s.score)}</span></div>`).join('');
   document.querySelectorAll('#site-list .srow').forEach(el=>{el.onclick=()=>{
-    map.jumpTo({center:[+el.dataset.lng,+el.dataset.lat],zoom:10});};});
+    map.jumpTo({center:[+el.dataset.lng,+el.dataset.lat],zoom:11});};});
 }
+const csv=v=>{ const t=v==null?'':String(v); return /[",\n]/.test(t)?`"${t.replace(/"/g,'""')}"`:t; };
 document.getElementById('dl-sites').onclick=()=>{
   if(!sites.length) return;
   const r=rankedSites();
-  const cols=['rank','name','lat','lng','score','h3','county','state',...live];
-  const rows=r.map((s,i)=>[i+1,`"${String(s.name).replace(/"/g,'""')}"`,s.lat,s.lng,
-    s.score==null?'':Math.round(s.score),s.props?.h3??'',
-    `"${(s.props?.cnames||'').split('|').join(', ')}"`,STATE[s.props?.st]||'',
-    ...live.map(f=>s.props?.[f]??'')].join(','));
+  // Pass through every attribute the upload carried, after the computed ones.
+  const extra=[...new Set(r.flatMap(s=>Object.keys(s.attrs||{})))].slice(0,40);
+  const cols=['rank','name','score','acres','cells_averaged','owner','land_use','value',
+              'lat','lng','h3','county','state',...live,...extra.map(k=>'src_'+k)];
+  const rows=r.map((s,i)=>[i+1,s.name,s.score==null?'':Math.round(s.score),
+    s.acres==null?'':s.acres.toFixed(2),s.nCells,s.owner,s.use,s.value,
+    s.lat.toFixed(6),s.lng.toFixed(6),s.props?.h3??'',
+    (s.props?.cnames||'').split('|').join('; '),STATE[s.props?.st]||'',
+    ...live.map(f=>s.props?.[f]==null?'':Math.round(s.props[f])),
+    ...extra.map(k=>s.attrs?.[k])].map(csv).join(','));
   download('ranked_sites.csv',[cols.join(','),...rows].join('\n'),'text/csv');
 };
 document.getElementById('rank-ai').onclick=async()=>{
   const host=document.getElementById('site-ai');
   if(!sites.length){ host.innerHTML='<p class="desc">Upload sites first.</p>'; return; }
   host.innerHTML='<p class="spin">thinking…</p>';
-  const r=rankedSites();
+  const r=rankedSites().slice(0,25);
   const table=r.map((s,i)=>{
     const p=s.props||{};
     const fac=live.filter(f=>p[f]!==undefined)
-      .map(f=>`${cfg.factors[f].label}=${p[f]}`).join('; ');
-    return `${i+1}. ${s.name} (${(p.cnames||'').split('|').join(', ')}, ${STATE[p.st]||'?'}) `+
-           `composite=${s.score==null?'n/a':Math.round(s.score)} :: ${fac}`;
+      .map(f=>`${cfg.factors[f].label}=${Math.round(p[f])}`).join('; ');
+    const meta=[s.acres!=null&&`${fmtAc(s.acres)}`, s.use&&`use: ${s.use}`,
+                s.owner&&`owner: ${s.owner}`].filter(Boolean).join(', ');
+    return `${i+1}. ${s.name} (${(p.cnames||'').split('|').join(', ')}, ${STATE[p.st]||'?'})`
+         + `${meta?' ['+meta+']':''} composite=${s.score==null?'n/a':Math.round(s.score)} :: ${fac}`;
   }).join('\n');
   try{
     const out=await askClaude(
 `You are advising on data center site selection. Below are candidate sites already
 scored 0-100 on each factor by an open-data model (higher is better on every factor).
+Where acreage, land use or owner is given, it came from the user's parcel file.
 
 ${table}
 
-Recommend the best site and say why, in at most 200 words. Name the specific
-factors that decide it and the main risk of your pick. If two are close, say so.
-Judge only from these numbers; do not invent facts about the locations.`,
+Recommend the best site and say why, in at most 220 words. Name the specific
+factors that decide it and the main risk of your pick. If acreage is given, say
+whether it is plausible for a campus (large hyperscale sites typically need
+hundreds of acres). If two are close, say so. Judge only from these numbers
+and attributes; do not invent facts about the locations.`,
       {maxTokens:900});
     renderAI(host,out);
   }catch(err){ host.innerHTML=`<p class="warn">${err.message}</p>`; }

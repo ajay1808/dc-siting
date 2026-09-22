@@ -69,10 +69,15 @@
   </section>
 
   <section data-panel="sites" hidden>
-    <p class="desc">Upload candidate sites to score and rank them against each
-      other. Accepts <b>.zip</b> (shapefile), <b>.geojson</b>, <b>.json</b>, or
-      <b>.csv</b> with lat/lon columns.</p>
-    <input type="file" id="site-file" accept=".zip,.geojson,.json,.csv,.txt">
+    <p class="desc">Upload candidate <b>sites or parcels</b> to score and rank
+      them. Accepts <b>.zip</b> (shapefile), <b>.geojson</b>, or <b>.csv</b> with
+      lat/lon. Parcel polygons are scored over every cell they cover, with real
+      acreage; owner, APN, land use and value columns are recognised
+      (Regrid, county assessor and most GIS exports).</p>
+    <label class="lbl mt">Minimum parcel size (acres)</label>
+    <input type="number" id="min-acres" value="0" min="0" step="10"
+      style="width:100%;background:#0c1017;color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:7px;font:inherit">
+    <input type="file" id="site-file" class="mt" accept=".zip,.geojson,.json,.csv,.txt">
     <div id="site-status" class="desc"></div>
     <div class="wbar mt"><button id="rank-ai">AI recommendation</button>
       <button id="dl-sites">Export ranked CSV</button></div>

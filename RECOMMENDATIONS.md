@@ -1,126 +1,133 @@
-# Data gaps and what would close them
+# Data gaps: what is closed, what is left, and what costs money
 
-Written from the perspective of what an energy/siting analyst would actually
-want. Split into **added**, **open-source gaps still worth doing**, and
-**paid**, because the paid tier is where the genuinely decisive data lives and
-it is worth being honest about that rather than pretending open data is
-sufficient.
-
----
-
-## Added in this pass
-
-| Layer | Why it matters | Source |
-|---|---|---|
-| **Air permitting burden** | A campus needs 50–200 MW of backup generation. Inside a nonattainment area that plant triggers New Source Review, may need emission offsets bought in the same airshed, and faces hard caps on test-run hours. Almost no public siting map carries this. | [EPA Green Book](https://www.epa.gov/green-book) |
-| **Brownfield interconnection** | A retiring thermal plant leaves an energised POI with transmission already sized. Re-using it is currently the fastest route to large load in the US. | EIA-860M, Retired sheet |
-| **Grid carbon intensity** | CO2e/MWh before any PPA. Sets how much clean procurement a corporate commitment needs, and increasingly whether a project is approvable. | [EPA eGRID](https://www.epa.gov/egrid) |
-| **Military installations** | Footprints are not developable. | DoD via ArcGIS |
+Written from an energy/siting analyst's point of view. The honest headline
+up front: open data now covers most of what a screening model needs, but the
+three things that most often *decide* a real project — the load
+interconnection queue, the specific parcel, and the utility's actual
+available capacity — are still not public.
 
 ---
 
-## Open-source gaps still worth closing
+## Closed in this pass
 
-Ordered by how much they would change an answer.
+| Gap | How it was closed | Coverage | What still isn't right |
+|---|---|---|---|
+| **Interconnection queue** | Consolidated all ISO queues ourselves with the open-source [`gridstatus`](https://github.com/gridstatus/gridstatus) library instead of relying on LBNL | 13,390 projects, 1,406 counties, 654 GW active (6 ISOs; PJM with a free key) | Generation queue, not load queue. Non-ISO Southeast/West missing. |
+| **Queue friction** | Withdrawal rate per county, shrunk toward the ISO average | 5 ISOs | ERCOT publishes no withdrawn projects, so Texas has no friction value (by design — a 0% would be an artifact) |
+| **Nodal LMP** | CAISO OASIS day-ahead prices for every node, joined to node coordinates from CAISO's public price-contour feed; 24 days sampled across a year | ~14,600 CAISO + Western EIM nodes | West only. Other ISOs need node coordinates. |
+| **Transmission congestion** | The congestion component of the same nodal LMP, kept signed (negative = export-constrained = good for new load) | Same | Same |
+| **Utility territory + price** | EIA-861 industrial revenue/sales by utility, drawn on HIFLD service territories | 1,070 priced territories; state price as fallback | Average industrial price, not a negotiated large-load tariff |
+| **Water, properly** | Added 2050 projected stress (Aqueduct), 10-year drought frequency (US Drought Monitor), reclaimed-water supply (EPA ECHO, 32,700 MGD across 4,356 plants) | National | No groundwater or county withdrawal data |
+| **Climate projections** | NOAA/USGS CMRA county projections: 2036-2065 cooling degree days and days above 95°F, RCP4.5 | 3,233 counties | Still dry-bulb, not wet-bulb |
+| **Fiber** | Class I rail + interstate rights-of-way (where InterTubes found long-haul fiber runs), plus submarine cable landings | National | A proxy for where fiber usually is, not a route map |
+| **Labor** | Census County Business Patterns: electricians, line crews, mechanical trades, hosting workforce, within 80 km | 2,563 counties | Establishment location, not worker residence |
+| **Land cost** | FHFA county land prices per acre | 2,444 counties | Residential land basis — relative signal only |
 
-### 1. Real interconnection queue position — *the single biggest gap*
-The model uses **planned generation additions** as a proxy. That is
-generation-side and it understates contention badly. What actually decides a
-project is the **load-side queue**: how many large-load requests are ahead of
-you at that substation and what the study backlog looks like.
+### Data problems caught while building these
 
-Each ISO/RTO publishes its own queue (PJM, MISO, ERCOT, SPP, CAISO, ISO-NE,
-NYISO) in inconsistent formats. LBNL's *Queued Up* consolidates them but
-returns 403 to scripted clients; the underlying data is on Zenodo and OEDI.
-**This is where I would spend the next effort.**
+Each of these would have silently produced a plausible but wrong map:
 
-### 2. Nodal wholesale prices (LMP)
-Power cost currently joins at **state** level from EIA retail averages. Real
-siting economics run on **nodal LMP** — basis differentials inside one state
-routinely exceed the differences between states. ISOs publish day-ahead and
-real-time LMP by node; the history is large but free.
+- **ERCOT's state field reads `"Texas"`, not `"TX"`.** Truncating to two
+  characters dropped all 1,778 Texas projects — the largest data center
+  market — from the queue layer. Queue coverage went from 353 GW to 654 GW
+  after the fix.
+- **ERCOT omits withdrawn projects from its published queue**, so its
+  withdrawal rate is 0% by construction. Texas would have ranked as the
+  lowest-friction market in the country.
+- **EPA lists Erwin WWTP (NC) at 650,000 MGD** — twenty times all US
+  municipal flow. Dropped with a plausibility cap; the national total then
+  matches published figures (~32,700 MGD).
+- **ECHO's default CSV omits latitude.** Columns now requested explicitly.
+- **LMP clamps guessed before looking at the data** ([15, 90] $/MWh) would
+  have squeezed every node into ~15% of the scale. Set from the observed
+  distribution instead ($26–40).
+- **IDW has no natural edge**: without a distance cutoff, western node
+  prices would have been extrapolated onto every East Coast cell.
 
-### 3. Utility service territory + retail tariff
-Which utility serves a parcel determines the tariff, the interconnection
-process and who pays for upgrades. HIFLD's territory layer moved to restricted
-access. EIA-861 has utility-level data without geometry; joining them is
-doable but fiddly.
+---
 
-### 4. Transmission capacity and congestion
-Proximity to a line says nothing about whether that line has **headroom**.
-ISO congestion reports, ATC postings and NERC assessments would turn "near a
-500 kV line" into "near a 500 kV line with capacity".
+## What is still open — and exactly what it would take
 
-### 5. Water, properly
-Currently WRI Aqueduct basin stress only. Missing:
-- **USGS county water use** (no scriptable download found; manual)
-- **Groundwater / aquifer depletion** (USGS)
-- **US Drought Monitor**, weekly
-- **Reclaimed water availability** — the preferred DC cooling source; EPA CWNS
+### 1. The load interconnection queue — *still the biggest gap*
+What decides a data center is how many large-load requests are ahead of
+yours at a given substation. Utilities mostly do not publish this. ERCOT is
+the exception (its Large Load Interconnection Status report). Everything
+modelled here is generation-side.
 
-### 6. Fiber routes
-Currently a *proxy*: IXP proximity plus ACS household adoption. Actual
-**long-haul fiber routes** are what matter. The academic *InterTubes* dataset
-is the best open option; FCC's BDC has no scriptable path.
+### 2. Non-ISO generation queues (Southeast, much of the West)
+Southern Company, TVA, Duke, and western utilities outside CAISO publish
+queues only through individual OASIS pages. **LBNL's *Queued Up* file
+already consolidates them.** It blocks scripted access, so it needs a
+one-off manual download (annual). Drop it in `data/raw/lbnl/` and the
+ingest can be wired to it — the schema changes yearly, so it should be
+parsed against the actual file rather than guessed.
 
-### 7. Labor
-Construction and operations labor availability — electricians, millwrights,
-DC technicians — is a real constraint on build schedule. BLS OES by metro is
-free but returned 403 to scripted access; needs a manual pull.
+### 3. Nodal prices outside the West
+The method works; the missing piece is node **coordinates**. Each ISO's
+public price-contour map has to plot nodes somewhere, so each is a candidate
+source: SPP (`pricecontourmap.spp.org`), MISO's market displays, ERCOT's
+LMP contour map, PJM Data Viewer. Historical prices for SPP, MISO, NYISO
+and ERCOT are already available keylessly through `gridstatus`.
 
-### 8. Land cost
-No proxy at all today. USDA NASS agricultural land values by county are free
-via the QuickStats API and would give a usable floor. Actual parcel-level
-pricing is paid (below).
+### 4. Utility available capacity
+Whether *this* substation can take 300 MW is usually knowable only by
+asking the utility. Some publish hosting-capacity maps for distribution,
+almost none for transmission-level load.
 
-### 9. Climate *projections*
-Cooling and water are scored on **historical normals**. A 30-year asset should
-be screened against projected wet-bulb and projected water stress — WRI
-Aqueduct publishes future scenarios; NOAA/NCA publish downscaled projections.
-
-### 10. Smaller additions
-- FEMA NFHL floodplain polygons (registry entry exists; NRI only gives county risk)
-- EPA brownfields / Superfund (redevelopment credits, pre-existing service)
+### 5. Smaller open additions still worth doing
+- USGS groundwater levels and trends
+- FEMA NFHL floodplain polygons (NRI gives county risk only)
+- EPA brownfields / Superfund (redevelopment credits, existing service)
 - FAA airports and obstruction surfaces
-- Opportunity Zones
-- Wind resource (currently solar only — wind is too spatially spiky for the coarse sampling used)
-- Rail access for heavy equipment
-- State RPS / clean energy standards
+- NREL wind resource (solar only today)
+- State RPS / clean-energy standards
+
+---
+
+## Parcels
+
+### Recommendation: support upload (done), buy Regrid if buying anything
+
+The tool now accepts parcel polygons from **any** source. Upload a
+shapefile, GeoJSON or CSV and it computes real acreage, scores each parcel
+across every cell it covers (area-weighted, not just its centroid), carries
+owner / APN / land use / value through to the ranking and CSV export, and
+filters by minimum acreage. Column names from Regrid, county assessors and
+most GIS exports are recognised automatically.
+
+That makes the source a separate decision from the tool:
+
+**If you buy one national dataset: [Regrid](https://regrid.com).**
+Nationwide coverage with a standardised schema — owner, parcel number,
+acreage, land use, zoning where available, assessed value — so a
+multi-state search does not mean reconciling fifty county formats. It
+sells per-county as well as nationally, has an API, and runs a program for
+academic and nonprofit users. Its field names (`owner`, `parcelnumb`,
+`ll_gisacre`, `usedesc`, `parval`) are recognised by the upload directly.
+Alternatives: LightBox (ReportAll), CoreLogic, ATTOM — generally
+enterprise-priced.
+
+**Free statewide parcel layers exist in several data-center states** —
+worth checking before buying: Texas (TxGIO StratMap), Virginia (VGIN),
+North Carolina (NC OneMap), Indiana (IndianaMap), Wisconsin (statewide
+parcel map), Oregon (ORMAP), Washington, Utah (UGRC), Montana, Florida
+(FDOR), Massachusetts (MassGIS), Arkansas. Verify current availability;
+Ohio, Georgia, Arizona and Iowa are county-by-county.
 
 ---
 
 ## Paid data — where the decisive information actually is
 
-Deliberately excluded from the build. Listed so the tradeoff is explicit.
-
-| What | Why it beats the free version | Vendors |
+| What | Why it beats the open version | Vendors |
 |---|---|---|
-| **Parcel boundaries & ownership** | The model scores 5 km² hexes. Real siting needs *this parcel*, its owner, acreage and assessed value. This is the biggest single step-change available. | Regrid, CoreLogic, ATTOM |
-| **Data center inventory & pipeline** | OSM has 1,764 tagged US data centers; the real number including announced capacity is far higher, with MW, tenant and status. | DC Byte, Baxtel, datacenterHawk, 451 Research |
-| **Utility interconnection capacity** | Actual available MW at a substation. Sometimes only obtainable by asking the utility directly. | Utility-specific; Grid Strategies, Enverus |
-| **Nodal LMP history & forwards** | Curated, cleaned, with forward curves rather than raw ISO dumps. | Yes Energy, Velocity Suite (Hitachi), Enverus |
-| **ASHRAE design conditions** | Design wet-bulb — the *right* variable for cooling. The model substitutes degree-days, which ignores humidity entirely. | ASHRAE handbook / licensed data |
-| **Land cost & comparables** | Actual transaction comps rather than agricultural proxies. | CoStar, CBRE, JLL |
-| **Fiber route & latency** | Carrier-level route geometry and measured latency. | TeleGeography, Cross River Fiber |
-| **Environmental due diligence** | Phase I/II ESA, wetland delineation, cultural resources — all site-specific fieldwork. | Regional consultants |
+| **Parcels** | Turns "this 5 km² area" into "these seven parcels, here is who owns them" | Regrid, LightBox, CoreLogic, ATTOM |
+| **Data center inventory & pipeline** | OSM has ~1,760 tagged US facilities; the real count with MW, tenant and status is far higher | DC Byte, Baxtel, datacenterHawk, 451 Research |
+| **Nodal LMP, all ISOs, cleaned** | History, forwards and node maps in one place | Yes Energy, Enverus, Hitachi Velocity Suite, gridstatus.io |
+| **Interconnection intelligence** | Load queues, study results, upgrade cost allocations | Enverus, Grid Strategies, Interconnection.fyi |
+| **ASHRAE design conditions** | Design wet-bulb — the variable that actually sizes cooling | ASHRAE |
+| **Land comps** | Real transaction prices for industrial acreage | CoStar, brokerage research |
+| **Fiber routes & latency** | Actual route geometry and measured latency | TeleGeography, carrier data |
 
 ### If you bought only one thing
-**Parcel data.** Every other paid feed refines a score; parcels change what the
-tool *is* — from "this 5 km² area looks promising" to "these seven parcels
-are the candidates, here is who owns them". That is the difference between a
-screening map and a siting tool.
-
----
-
-## Known limits of what is built
-
-Repeated here so they are not buried:
-
-- **Cooling** uses degree-days, not design wet-bulb — humidity is invisible.
-- **Interconnection** uses planned generation, not the queue — understates contention.
-- **Power cost** joins at state level — intrastate spread is lost.
-- **Broadband** measures adoption, not availability.
-- **Slope** is sampled at ~1.4 km — screens out mountains, says nothing about a parcel.
-- **Policy** is LLM-assembled with mandatory citations, and should be verified before relying on it.
-- **Grid carbon** is a subregion average; marginal emissions differ from average.
-- Scores are **relative**, not absolute. A 70 means "better than most of the country on these weights", not "viable".
+**Parcels.** Every other feed refines a score. Parcels change what the tool
+*is* — from a screening map into a siting tool.

@@ -633,6 +633,377 @@ layers:
         url: https://services.arcgis.com/xOi1kZaI0eWDREZv/arcgis/rest/services/Military_Installations_byBranch/FeatureServer/0
         format: arcgis_rest
 
+  - id: iso_queue
+    name: ISO Interconnection Queue - active supply (consolidated)
+    category: energy
+    tier: medium
+    phase: 1
+    role: [display, score]
+    geometry: join_county
+    auth: none
+    license: ISO public data via gridstatus (BSD-3)
+    cadence: monthly
+    note: >
+      All seven ISO generation queues consolidated directly with the open-source
+      gridstatus library, replacing reliance on LBNL (which blocks scripted
+      access). Active queued MW per county: supply that could serve co-located
+      load, and a signal planners expect injection there. PJM requires a free
+      PJM_API_KEY. Non-ISO regions (Southeast, much of the West) have no data
+      and drop out rather than reading as zero.
+    endpoints:
+      - name: gridstatus
+        url: https://github.com/gridstatus/gridstatus
+        format: python
+    scoring:
+      factor: grid_headroom
+      direction: positive
+      method: normalize
+      value_field: active_mw
+      transform: log1p
+      clamp: [0, 10.0]          # log1p(MW); 10.0 ~= 22 GW
+
+  - id: iso_queue_friction
+    name: ISO Interconnection Queue - withdrawal rate
+    category: energy
+    tier: medium
+    phase: 1
+    role: [score]
+    geometry: join_county
+    data_from: iso_queue
+    auth: none
+    license: ISO public data via gridstatus (BSD-3)
+    cadence: monthly
+    note: >
+      Share of queued projects ever withdrawn, shrunk toward the ISO-wide rate
+      (prior strength 8 projects) so a county with two projects cannot read as
+      0% or 100%. High withdrawal is the fingerprint of expensive network
+      upgrades.
+    endpoints:
+      - name: gridstatus
+        url: https://github.com/gridstatus/gridstatus
+        format: python
+    scoring:
+      factor: interconnection_friction
+      direction: negative
+      method: normalize_invert
+      value_field: withdrawn_share
+      clamp: [0.40, 0.95]
+
+  - id: utility_price
+    name: Industrial Price by Retail Utility (EIA-861)
+    category: energy
+    tier: medium
+    phase: 1
+    role: [display, score]
+    geometry: polygon
+    auth: none
+    license: US Federal / public domain
+    cadence: annual
+    note: >
+      Replaces the state-average price. EIA-861 industrial revenue / sales per
+      utility, drawn on HIFLD retail service territories by EIA utility ID.
+      Overlaps burn the higher price (conservative). An average realised
+      industrial price, not a negotiated large-load tariff; matters less in
+      retail-choice states where a campus buys at wholesale.
+    endpoints:
+      - name: eia861
+        url: https://www.eia.gov/electricity/data/eia861/
+        format: zip
+      - name: territories
+        url: https://services6.arcgis.com/BAJNi3EgCdtQ1BCG/arcgis/rest/services/Electric_Retail_Service_Territories/FeatureServer/0
+        format: arcgis_rest
+    scoring:
+      factor: power_cost
+      direction: negative
+      method: normalize_invert
+      value_field: cents_kwh
+      clamp: [4.0, 20.0]
+
+  - id: labor_pool
+    name: Skilled Trades & DC Workforce (Census CBP)
+    category: socioeconomic
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: point
+    auth: api_key
+    api_key_env: CENSUS_API_KEY
+    license: US Census / public domain
+    cadence: annual
+    note: >
+      Electrical contractors, power-line construction, mechanical contractors
+      and existing hosting workforce, weighted by how directly each gates a
+      build, summed within commuting distance of each cell.
+    endpoints:
+      - name: census_cbp
+        url: https://api.census.gov/data/2022/cbp
+        format: json_api
+    scoring:
+      factor: labor
+      direction: positive
+      method: capacity_within_radius
+      value_field: weighted_workers
+      radius_km: 80
+      clamp_total_mw: [0, 60000]   # weighted workers within 80 km
+
+  - id: reclaimed_water
+    name: Reclaimed Water Supply (EPA ECHO major POTWs)
+    category: water
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: point
+    auth: none
+    license: EPA / public domain
+    cadence: quarterly
+    note: >
+      Treated municipal effluent is the preferred cooling source for large
+      campuses because it does not compete with drinking water, which is where
+      most local opposition to data center water use starts.
+    endpoints:
+      - name: epa_echo_cwa
+        url: https://echodata.epa.gov/echo/cwa_rest_services.get_facilities
+        format: json_api
+    scoring:
+      factor: water_availability
+      direction: positive
+      method: capacity_within_radius
+      value_field: flow_mgd
+      radius_km: 25
+      clamp_total_mw: [0, 300]     # MGD within radius
+
+  - id: drought_frequency
+    name: Drought Frequency 2016-2025 (US Drought Monitor)
+    category: water
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: join_county
+    auth: none
+    license: NDMC / public
+    cadence: weekly
+    note: >
+      Average share of the county in D2+ drought across ten years of weekly
+      maps. A decade, not this week, because the asset lives for thirty years.
+    endpoints:
+      - name: usdm_county_stats
+        url: https://usdmdataservices.unl.edu/api/CountyStatistics/
+        format: csv_api
+    scoring:
+      factor: water_availability
+      direction: negative
+      method: normalize_invert
+      value_field: pct_area_severe_drought
+      clamp: [0, 40]
+
+  - id: water_stress_future
+    name: Projected Water Stress 2050 (WRI Aqueduct, BAU)
+    category: water
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: polygon
+    auth: none
+    license: WRI / CC BY 4.0
+    cadence: static
+    note: Same basins as the baseline layer, projected to 2050 business-as-usual.
+    endpoints:
+      - name: wri_aqueduct
+        url: https://files.wri.org/aqueduct/aqueduct-4-0-water-risk-data.zip
+        format: zip
+    scoring:
+      factor: water_availability
+      direction: negative
+      method: normalize_invert
+      value_field: ws_2050
+      clamp: [0, 5]
+
+  - id: climate_future
+    name: Projected Cooling Degree Days 2036-2065 (CMRA, RCP4.5)
+    category: climate
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: join_county
+    auth: none
+    license: NOAA/USGS / public domain
+    cadence: static
+    note: >
+      LOCA-downscaled county projections from the federal Climate Mapping for
+      Resilience and Adaptation portal. RCP4.5 is a middle scenario, not the
+      worst case. Replaces historical normals as the primary cooling signal.
+    endpoints:
+      - name: cmra
+        url: https://resilience.climate.gov/
+        format: arcgis_rest
+    scoring:
+      factor: cooling_efficiency
+      direction: negative
+      method: normalize_invert
+      value_field: cdd_2050
+      clamp: [200, 5000]
+
+  - id: heat_days
+    name: Days Above 95F by Mid-Century (CMRA, RCP4.5)
+    category: climate
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: join_county
+    data_from: climate_future
+    auth: none
+    license: NOAA/USGS / public domain
+    cadence: static
+    note: >
+      Peak heat, not average heat. Governs how much cooling plant has to be
+      sized for the design day, and coincides with grid peak -- the hours a
+      campus is most likely to be asked to curtail.
+    endpoints:
+      - name: cmra
+        url: https://resilience.climate.gov/
+        format: arcgis_rest
+    scoring:
+      factor: extreme_heat
+      direction: negative
+      method: normalize_invert
+      value_field: days95_2050
+      clamp: [0, 120]
+
+  - id: land_cost
+    name: Land Price per Acre (FHFA)
+    category: socioeconomic
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: join_county
+    auth: none
+    license: FHFA / public domain
+    cadence: annual
+    note: >
+      Appraisal-based residential land value per acre. A relative signal only:
+      campuses buy industrial or agricultural land that is usually much cheaper
+      per acre, but where housing land is expensive, all land is.
+    endpoints:
+      - name: fhfa_land_prices
+        url: https://www.fhfa.gov/research/papers/wp1901
+        format: xlsx
+    scoring:
+      factor: land_cost
+      direction: negative
+      method: normalize_invert
+      value_field: land_usd_acre
+      transform: log1p
+      clamp: [8.5, 14.0]           # log1p($/acre): ~$5k to ~$1.2M
+
+  - id: cable_landings
+    name: Submarine Cable Landing Stations
+    category: network
+    tier: easy
+    phase: 1
+    role: [display, score]
+    geometry: point
+    auth: none
+    license: TeleGeography open map data (CC BY-SA)
+    cadence: quarterly
+    endpoints:
+      - name: submarinecablemap
+        url: https://www.submarinecablemap.com/api/v3/landing-point/landing-point-geo.json
+        format: geojson
+    scoring:
+      factor: network_latency
+      direction: positive
+      method: distance_decay
+      decay_km: 60
+      max_km: 250
+
+  - id: rail_corridors
+    name: Class I Rail Main Lines (fiber right-of-way proxy)
+    category: network
+    tier: medium
+    phase: 1
+    role: [display, score]
+    geometry: line
+    auth: none
+    license: BTS NTAD / public domain
+    cadence: annual
+    note: >
+      The InterTubes study (Durairajan et al., SIGCOMM 2015) found US long-haul
+      fiber runs overwhelmingly inside rail and highway rights-of-way. A proxy
+      for where long-haul routes are, not a map of them.
+    endpoints:
+      - name: ntad_rail
+        url: https://services.arcgis.com/xOi1kZaI0eWDREZv/arcgis/rest/services/NTAD_North_American_Rail_Network_Lines/FeatureServer/0
+        format: arcgis_rest
+    scoring:
+      factor: fiber_corridors
+      direction: positive
+      method: distance_decay
+      decay_km: 12
+      max_km: 40
+
+  - id: nodal_lmp
+    name: Nodal Wholesale Price (CAISO / WEIM day-ahead)
+    category: energy
+    tier: hard
+    phase: 1
+    role: [display, score]
+    geometry: point
+    auth: none
+    license: CAISO OASIS public data via gridstatus
+    cadence: monthly
+    note: >
+      Average day-ahead LMP at every CAISO and Western EIM node, 24 sample days
+      across the past year. Node coordinates from CAISO's public price-contour
+      feed, joined by node name. West only for now; other ISOs need a node
+      coordinate source.
+    endpoints:
+      - name: caiso_contour
+        url: https://wwwmobile.caiso.com/Web.Service.Chart/api/v3/ChartService/PriceContourMap1
+        format: json
+      - name: caiso_oasis
+        url: http://oasis.caiso.com/
+        format: zip
+    scoring:
+      factor: wholesale_price
+      direction: negative
+      method: idw_invert
+      value_field: lmp_mean
+      k: 6
+      max_km: 60
+      # Set from the observed distribution (p5 $28.4, p95 $36.9). The first
+      # guess of [15, 90] would have squeezed every node into ~15% of the scale.
+      clamp: [26, 40]
+
+  - id: nodal_congestion
+    name: Transmission Congestion (CAISO / WEIM congestion component)
+    category: energy
+    tier: hard
+    phase: 1
+    role: [display, score]
+    geometry: point
+    data_from: nodal_lmp
+    auth: none
+    license: CAISO OASIS public data via gridstatus
+    cadence: monthly
+    note: >
+      Signed average congestion component of LMP. Negative marks an
+      export-constrained pocket -- surplus generation that cannot get out --
+      which is where new load is most welcome and power is cheapest. Positive
+      marks an import-constrained load pocket, where new load makes things
+      worse and pays for it.
+    endpoints:
+      - name: caiso_oasis
+        url: http://oasis.caiso.com/
+        format: zip
+    scoring:
+      factor: transmission_congestion
+      direction: negative
+      method: idw_invert
+      value_field: congestion_mean
+      k: 6
+      max_km: 60
+      clamp: [-4, 4]             # observed p5 -3.1, p95 +2.1
+
   - id: seismic
     name: Seismic Hazard (PGA 2% in 50yr)
     category: hazard

@@ -18,6 +18,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -1357,6 +1358,719 @@ def fetch_military_land() -> pd.DataFrame:
     return df
 
 
+
+# ---------------------------------------------------------------------------
+# County name -> FIPS, for sources that publish "County, ST" text rather than
+# codes (ISO queues, some federal tables).
+# ---------------------------------------------------------------------------
+_COUNTY_LUT = None
+
+
+def _norm_county(name: str) -> str:
+    n = str(name).lower().strip()
+    n = re.sub(r"\b(county|parish|borough|census area|municipality|city and borough)\b", "", n)
+    n = n.replace("saint ", "st ").replace("st. ", "st ").replace("ste. ", "ste ")
+    n = re.sub(r"[^a-z0-9 ]", "", n)
+    return re.sub(r"\s+", " ", n).strip()
+
+
+def _county_lookup() -> dict:
+    """(state_abbr, normalised name) -> 5-digit FIPS, from the us-atlas file
+    the grid already uses, so joins agree with cell assignment."""
+    global _COUNTY_LUT
+    if _COUNTY_LUT is not None:
+        return _COUNTY_LUT
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from grid import _decode_topojson
+    cache = RAW / "us-counties-10m.json"
+    if not cache.exists():
+        raise RuntimeError("run pipeline/counties.py first (needs us-counties-10m.json)")
+    feats = _decode_topojson(json.loads(cache.read_text()), "counties")
+    inv = {v: k for k, v in _state_fips().items()}
+    lut = {}
+    for f in feats:
+        code = str(f["id"]).zfill(5)
+        st = inv.get(code[:2])
+        if st:
+            lut[(st, _norm_county(f["props"].get("name", "")))] = code
+    _COUNTY_LUT = lut
+    return lut
+
+
+
+_STATE_NAMES = {
+    "alabama":"AL","arizona":"AZ","arkansas":"AR","california":"CA","colorado":"CO",
+    "connecticut":"CT","delaware":"DE","district of columbia":"DC","florida":"FL",
+    "georgia":"GA","idaho":"ID","illinois":"IL","indiana":"IN","iowa":"IA",
+    "kansas":"KS","kentucky":"KY","louisiana":"LA","maine":"ME","maryland":"MD",
+    "massachusetts":"MA","michigan":"MI","minnesota":"MN","mississippi":"MS",
+    "missouri":"MO","montana":"MT","nebraska":"NE","nevada":"NV","new hampshire":"NH",
+    "new jersey":"NJ","new mexico":"NM","new york":"NY","north carolina":"NC",
+    "north dakota":"ND","ohio":"OH","oklahoma":"OK","oregon":"OR","pennsylvania":"PA",
+    "rhode island":"RI","south carolina":"SC","south dakota":"SD","tennessee":"TN",
+    "texas":"TX","utah":"UT","vermont":"VT","virginia":"VA","washington":"WA",
+    "west virginia":"WV","wisconsin":"WI","wyoming":"WY"}
+# NYC boroughs are counties under different names.
+_BOROUGHS = {"bronx":"bronx","the bronx":"bronx","brooklyn":"kings",
+             "manhattan":"new york","staten island":"richmond","queens":"queens"}
+
+
+def _state_abbr(v) -> str:
+    """ISO queues report state as 'TX' or as 'Texas'. Truncating to two
+    characters turned every ERCOT row into 'TE' and dropped all 1,778 Texas
+    projects -- the single largest data center market -- from the queue layer."""
+    t = str(v or "").strip()
+    if len(t) == 2:
+        return t.upper()
+    return _STATE_NAMES.get(t.lower(), t.upper()[:2])
+
+
+def _match_counties(lut, st, raw) -> list:
+    raw = str(raw or "").strip()
+    if not raw or raw.lower() in ("nan", "none"):
+        return []
+    # Try the whole string first so hyphenated names (Miami-Dade) survive,
+    # then fall back to splitting multi-county entries.
+    whole = _norm_county(_BOROUGHS.get(raw.lower(), raw))
+    if (st, whole) in lut:
+        return [lut[(st, whole)]]
+    parts = [c.strip() for c in re.split(r"[,/;&-]| and ", raw) if c.strip()]
+    out = []
+    for c in parts:
+        c = re.sub(r"^the\s+", "", c, flags=re.I)
+        c = _BOROUGHS.get(c.lower(), c)
+        code = lut.get((st, _norm_county(c)))
+        if code:
+            out.append(code)
+    return out
+
+def _county_centroids() -> pd.DataFrame:
+    """County centroid points, for spreading county statistics over distance."""
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from grid import _decode_topojson
+    from shapely.geometry import shape as _shape
+    feats = _decode_topojson(json.loads((RAW / "us-counties-10m.json").read_text()),
+                             "counties")
+    rows = []
+    for f in feats:
+        try:
+            g = _shape(f["geometry"]).buffer(0)
+        except Exception:
+            continue
+        if g.is_empty:
+            continue
+        c = g.representative_point()
+        rows.append({"fips": str(f["id"]).zfill(5), "lat": c.y, "lng": c.x})
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# INTERCONNECTION QUEUE -- consolidated from every ISO ourselves
+# ---------------------------------------------------------------------------
+
+@fetcher("iso_queue")
+def fetch_iso_queue() -> pd.DataFrame:
+    """Generation interconnection queues from all seven US ISOs, via gridstatus.
+
+    LBNL's "Queued Up" consolidates these but blocks scripted access, so this
+    consolidates them directly. gridstatus normalises each ISO's format into
+    one schema (county, state, capacity, fuel, status, queue date).
+
+    Coverage caveat that matters: this is the GENERATION queue, and only for
+    ISO regions. The Southeast (Southern, TVA, Duke) and much of the West sit
+    outside any ISO and publish only through utility OASIS pages; those
+    counties get no value here and the factor drops out for them rather than
+    reading as zero. LBNL's file (manual download) is the way to fill them.
+
+    Emits one row per county with:
+      active_mw        queued generation still in play -- supply that could
+                       serve co-located load, and a sign planners expect
+                       injection there
+      withdrawn_share  share of all projects ever withdrawn, shrunk toward the
+                       ISO-wide rate so a county with 2 projects cannot read
+                       as 0% or 100% -- high withdrawal means expensive network
+                       upgrades
+    """
+    import warnings
+    warnings.filterwarnings("ignore")
+    import gridstatus
+
+    isos = [gridstatus.MISO, gridstatus.SPP, gridstatus.NYISO, gridstatus.ISONE,
+            gridstatus.CAISO, gridstatus.Ercot]
+    if _env("PJM_API_KEY"):
+        isos.append(gridstatus.PJM)
+    else:
+        print("    PJM skipped - set PJM_API_KEY (free, https://dataminer2.pjm.com)")
+
+    frames = []
+    for cls in isos:
+        try:
+            iso = cls(api_key=_env("PJM_API_KEY")) if cls is gridstatus.PJM else cls()
+            q = iso.get_interconnection_queue()
+            q["iso"] = cls.__name__.upper()
+            frames.append(q)
+            print(f"    {cls.__name__:<6} {len(q):>6,} projects")
+        except Exception as e:  # noqa: BLE001
+            print(f"    {cls.__name__:<6} FAILED {type(e).__name__}: {str(e)[:70]}")
+    if not frames:
+        raise RuntimeError("no ISO queue retrieved")
+    q = pd.concat(frames, ignore_index=True)
+
+    status = q["Status"].astype(str).str.lower()
+    q["is_active"] = status.str.contains("active|in progress|study|engineering|suspended|pending|confirmed|construction")
+    q["is_withdrawn"] = status.str.contains("withdraw|cancel|deactivat|terminat")
+    q["is_done"] = status.str.contains("operational|completed|in service|done")
+    q["mw"] = pd.to_numeric(q.get("Capacity (MW)"), errors="coerce").fillna(0)
+
+    lut = _county_lookup()
+    rows, unmatched = [], 0
+    for r in q.itertuples(index=False):
+        st = _state_abbr(getattr(r, "State", ""))
+        codes = _match_counties(lut, st, getattr(r, "County", ""))
+        if not codes:
+            unmatched += 1
+            continue
+        share = 1.0 / len(codes)            # split multi-county projects evenly
+        for c in codes:
+            rows.append({"join_key": c, "iso": r.iso, "mw": r.mw * share,
+                         "active": r.is_active, "withdrawn": r.is_withdrawn,
+                         "done": r.is_done})
+    d = pd.DataFrame(rows)
+    print(f"    matched {len(q)-unmatched:,}/{len(q):,} projects to a county "
+          f"({unmatched:,} unmatched: blank or unparseable county)")
+
+    # ERCOT's published queue lists only active and completed projects --
+    # withdrawn ones are removed from the file. Its measured withdrawal rate is
+    # therefore 0% by construction, and taking that at face value would make
+    # all of Texas read as the lowest-friction interconnection market in the
+    # country. Friction is only computed where the source reports withdrawals.
+    reports_withdrawals = d.groupby("iso")["withdrawn"].any().to_dict()
+    silent = sorted(k for k, v in reports_withdrawals.items() if not v)
+    if silent:
+        print(f"    friction not computable for {silent}: source omits withdrawn projects")
+
+    # ISO-wide withdrawal rate as the prior for shrinkage
+    iso_rate = d.groupby("iso")["withdrawn"].mean().to_dict()
+    K = 8.0                                  # prior strength, in projects
+    g = d.groupby("join_key")
+    out = pd.DataFrame({
+        "active_mw": g.apply(lambda x: x.loc[x.active, "mw"].sum()),
+        "n_projects": g.size(),
+        "n_withdrawn": g["withdrawn"].sum(),
+        "iso": g["iso"].agg(lambda s: s.mode().iat[0]),
+    }).reset_index()
+    prior = out["iso"].map(iso_rate).fillna(d["withdrawn"].mean())
+    out["withdrawn_share"] = ((out["n_withdrawn"] + K * prior)
+                              / (out["n_projects"] + K)).round(4)
+    out.loc[out["iso"].isin(silent), "withdrawn_share"] = np.nan
+    print(f"    {len(out):,} counties | active queue {out.active_mw.sum()/1000:,.0f} GW")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# POWER COST -- utility level, replacing the state average
+# ---------------------------------------------------------------------------
+
+EIA861_URL = "https://www.eia.gov/electricity/data/eia861/zip/f8612024.zip"
+
+
+@fetcher("utility_price")
+def fetch_utility_price() -> pd.DataFrame:
+    """Industrial price by retail utility, drawn on its service territory.
+
+    State-average price hides the spread that actually matters: in Virginia,
+    Dominion, Appalachian Power and the co-ops sit on different tariffs. EIA-861
+    reports industrial revenue and sales per utility; dividing gives an average
+    realised industrial price, which is drawn onto HIFLD service territories by
+    EIA utility ID.
+
+    Where territories overlap (co-ops frequently overlap IOUs in this layer)
+    the scorer burns the HIGHER price last, i.e. it is conservative.
+    Caveat: an average industrial price, not the large-load tariff a campus
+    would actually negotiate; and in retail-choice states (TX, OH, PA, IL...)
+    a campus buys at wholesale and this matters less.
+    """
+    import io as _io
+    import zipfile
+
+    from shapely.geometry import shape as _shape
+
+    RAW.mkdir(parents=True, exist_ok=True)
+    z = RAW / "eia861_2024.zip"
+    if not z.exists() or z.stat().st_size < 1_000_000:
+        req = urllib.request.Request(EIA861_URL, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=600) as r:
+            z.write_bytes(r.read())
+    zf = zipfile.ZipFile(z)
+    name = next(n for n in zf.namelist()
+                if n.startswith("Sales_Ult_Cust") and n.endswith(".xlsx") and "_CS" not in n)
+    s = pd.read_excel(_io.BytesIO(zf.read(name)), header=[0, 1, 2], engine="openpyxl")
+
+    def col(top, *want):
+        for c in s.columns:
+            if c[0].strip().upper() == top and all(w.lower() in " ".join(c).lower() for w in want):
+                return s[c]
+        raise KeyError((top, want))
+    uid = pd.to_numeric(col("UTILITY CHARACTERISTICS", "utility number"), errors="coerce")
+    rev = pd.to_numeric(col("INDUSTRIAL", "revenues"), errors="coerce")   # thousand $
+    mwh = pd.to_numeric(col("INDUSTRIAL", "sales"), errors="coerce")      # MWh
+    t = pd.DataFrame({"uid": uid, "rev": rev, "mwh": mwh}).dropna()
+    t = t[(t.mwh > 1000)]                    # ignore utilities with trivial industrial load
+    t = t.groupby("uid", as_index=False)[["rev", "mwh"]].sum()
+    t["cents_kwh"] = (t.rev * 1000 / (t.mwh * 1000) * 100).round(3)
+    price = dict(zip(t.uid.astype(int), t.cents_kwh))
+    print(f"    EIA-861: industrial price for {len(price):,} utilities "
+          f"(median {t.cents_kwh.median():.2f} c/kWh)")
+
+    BASE = ("https://services6.arcgis.com/BAJNi3EgCdtQ1BCG/arcgis/rest/services"
+            "/Electric_Retail_Service_Territories/FeatureServer/0")
+    rows, missing = [], 0
+    for f in _arcgis_paged(BASE, out_fields="ID,NAME,STATE,HOLDING_CO,CNTRL_AREA",
+                           bbox=CONUS_BBOX, page=200):
+        p = f.get("properties") or {}
+        try:
+            u = int(str(p.get("ID")).strip())
+        except (TypeError, ValueError):
+            continue
+        if u not in price:
+            missing += 1
+            continue
+        g = f.get("geometry")
+        if not g:
+            continue
+        try:
+            geom = _shape(g).buffer(0).simplify(0.004, preserve_topology=True)
+        except Exception:
+            continue
+        if geom.is_empty:
+            continue
+        rows.append({"wkt": geom.wkt, "utility_id": u, "utility": p.get("NAME"),
+                     "holding_co": p.get("HOLDING_CO"),
+                     "balancing_area": p.get("CNTRL_AREA"),
+                     "cents_kwh": price[u]})
+    df = pd.DataFrame(rows)
+    print(f"    territories priced: {len(df):,} ({missing:,} had no industrial sales)")
+    return df
+
+
+# ---------------------------------------------------------------------------
+# LABOR
+# ---------------------------------------------------------------------------
+
+LABOR_NAICS = {
+    "238210": ("electrical_contractors", 1.00),   # electricians: the binding trade
+    "237130": ("line_construction", 0.80),        # power & comms line construction
+    "238220": ("mechanical_contractors", 0.70),   # HVAC / plumbing: cooling plant
+    "518210": ("dc_operations", 0.60),            # existing hosting/compute workforce
+}
+
+
+@fetcher("labor_pool")
+def fetch_labor_pool() -> pd.DataFrame:
+    """Skilled construction and operations labor, from Census County Business
+    Patterns, spread over commuting distance by the scorer.
+
+    Electricians are the binding trade on most campus builds: a 300 MW site can
+    need several hundred on site at peak. Counts are weighted by how directly
+    each trade gates a build, emitted at county centroids, and summed within
+    commuting radius -- a crew does not stop at the county line.
+    CBP suppresses small cells, so rural counties under-count slightly.
+    """
+    key = _env("CENSUS_API_KEY")
+    if not key:
+        raise RuntimeError("CENSUS_API_KEY not set")
+    cents = _county_centroids().set_index("fips")
+    tot = {}
+    for code, (label, w) in LABOR_NAICS.items():
+        d = _get_json("https://api.census.gov/data/2022/cbp", {
+            "get": "EMP", "for": "county:*", "in": "state:*",
+            "NAICS2017": code, "key": key})
+        hdr, *rows = d
+        i_emp, i_st, i_co = hdr.index("EMP"), hdr.index("state"), hdr.index("county")
+        n = 0
+        for r in rows:
+            f = r[i_st].zfill(2) + r[i_co].zfill(3)
+            e = pd.to_numeric(r[i_emp], errors="coerce")
+            if pd.notna(e) and e > 0:
+                tot[f] = tot.get(f, 0.0) + float(e) * w
+                n += 1
+        print(f"    NAICS {code} {label:<24} {n:>5,} counties")
+        time.sleep(0.5)
+    out = pd.DataFrame([{"fips": f, "weighted_workers": v} for f, v in tot.items()])
+    out = out.join(cents, on="fips").dropna(subset=["lat", "lng"])
+    out = out[out.lat.between(24, 50) & out.lng.between(-125, -66)]
+    print(f"    labor points: {len(out):,} counties, "
+          f"{out.weighted_workers.sum():,.0f} weighted workers")
+    return out.reset_index(drop=True)
+
+
+
+# ---------------------------------------------------------------------------
+# WATER -- beyond baseline stress
+# ---------------------------------------------------------------------------
+
+@fetcher("reclaimed_water")
+def fetch_reclaimed_water() -> pd.DataFrame:
+    """Major municipal wastewater plants (EPA ECHO), by effluent flow.
+
+    Treated effluent is the preferred cooling-water source for large campuses:
+    it avoids competing with drinking-water supply, which is where most local
+    opposition to data center water use starts.
+
+    One CSV download, not paged JSON. The first version passed responseset=1,
+    which is the PAGE SIZE -- one facility per request, 4,908 requests -- and
+    ECHO's default columns omit latitude entirely, so every row was dropped.
+    `qcolumns` selects the columns explicitly.
+
+    Actual average flow is reported for about half the plants; the rest use
+    design flow at 65% utilisation, a typical figure, and are flagged.
+    """
+    import io as _io
+
+    q = _get_json("https://echodata.epa.gov/echo/cwa_rest_services.get_facilities",
+                  {"output": "JSON", "p_maj": "Y", "p_pcomp": "POT"})
+    qid = q["Results"]["QueryID"]
+    meta = _get_json("https://echodata.epa.gov/echo/cwa_rest_services.metadata",
+                     {"output": "JSON"})
+    want = {"FacLat", "FacLong", "CWPName", "CWPState",
+            "CWPTotalDesignFlowNmbr", "CWPActualAverageFlowNmbr"}
+    ids = [c["ColumnID"] for c in meta["Results"]["ResultColumns"] if c["ObjectName"] in want]
+    url = ("https://echodata.epa.gov/echo/cwa_rest_services.get_download?"
+           + urllib.parse.urlencode({"qid": qid, "output": "CSV", "qcolumns": ",".join(ids)}))
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=300) as r:
+        d = pd.read_csv(_io.BytesIO(r.read()), low_memory=False)
+    actual = pd.to_numeric(d.get("CWPActualAverageFlowNmbr"), errors="coerce")
+    design = pd.to_numeric(d.get("CWPTotalDesignFlowNmbr"), errors="coerce")
+    flow = actual.where(actual > 0, design * 0.65)
+    df = pd.DataFrame({"lat": pd.to_numeric(d["FacLat"], errors="coerce"),
+                       "lng": pd.to_numeric(d["FacLong"], errors="coerce"),
+                       "flow_mgd": flow, "flow_estimated": ~(actual > 0),
+                       "name": d.get("CWPName"), "state": d.get("CWPState")})
+    df = df.dropna(subset=["lat", "lng", "flow_mgd"])
+    df = df[(df.flow_mgd > 0) & df.lat.between(24, 50) & df.lng.between(-125, -66)]
+    # EPA's own file carries entry errors: Erwin WWTP, NC is listed at 650,000
+    # MGD, alone twenty times all US municipal flow. Stickney (Chicago), the
+    # largest plant in the world, is ~1,200 MGD, so anything above 1,500 is an
+    # error. Dropping it brings the national total to ~31,500 MGD, which
+    # matches published US municipal wastewater volume.
+    bad = df.flow_mgd > 1500
+    if bad.any():
+        print(f"    dropped {bad.sum()} implausible flow value(s): "
+              + ", ".join(f"{n.strip()} ({v:,.0f} MGD)" for n, v in
+                          zip(df.loc[bad, "name"], df.loc[bad, "flow_mgd"])))
+    df = df[~bad]
+    print(f"    major POTWs: {len(df):,} | {df.flow_mgd.sum():,.0f} MGD "
+          f"({df.flow_estimated.mean():.0%} from design flow)")
+    return df.reset_index(drop=True)
+
+
+@fetcher("drought_frequency")
+def fetch_drought_frequency() -> pd.DataFrame:
+    """US Drought Monitor, 2016-2025: average share of each county in severe
+    (D2) or worse drought across ~520 weekly maps.
+
+    Ten years rather than current conditions: a campus is a 30-year asset, and
+    this week's drought map says little about the next decade. One request per
+    state -- the API returns every county in a state at once.
+    """
+    frames = []
+    for st in sorted(_state_fips()):
+        url = ("https://usdmdataservices.unl.edu/api/CountyStatistics/"
+               "GetDroughtSeverityStatisticsByAreaPercent?"
+               + urllib.parse.urlencode({"aoi": st, "startdate": "1/1/2016",
+                                         "enddate": "12/31/2025", "statisticsType": "1"}))
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=300) as r:
+                txt = r.read().decode("utf8", "replace")
+            import io as _io
+            d = pd.read_csv(_io.StringIO(txt), dtype={"FIPS": str})
+            frames.append(d[["FIPS", "D2"]])
+        except Exception as e:  # noqa: BLE001
+            print(f"    {st} failed: {type(e).__name__}")
+        time.sleep(0.8)
+    d = pd.concat(frames, ignore_index=True)
+    d["D2"] = pd.to_numeric(d["D2"], errors="coerce")
+    out = d.groupby("FIPS", as_index=False)["D2"].mean()
+    out = out.rename(columns={"FIPS": "join_key", "D2": "pct_area_severe_drought"})
+    out["join_key"] = out["join_key"].str.zfill(5)
+    print(f"    counties: {len(out):,} | median {out.pct_area_severe_drought.median():.1f}% "
+          f"of area in D2+ on an average week")
+    return out
+
+
+@fetcher("water_stress_future")
+def fetch_water_stress_future() -> pd.DataFrame:
+    """WRI Aqueduct 4.0 projected baseline water stress, 2050, business-as-usual.
+
+    The baseline layer scores today's stress; a campus built now operates
+    through 2050. Same basin geometry as the baseline layer, read from the
+    same WRI download.
+    """
+    import subprocess
+
+    from shapely.geometry import shape as _shape
+
+    exdir = RAW / "aqueduct40"
+    gdb = next((p for p in exdir.rglob("*.gdb") if p.is_dir()), None)
+    if gdb is None:
+        raise RuntimeError("run water_stress first (downloads the Aqueduct archive)")
+    out = INTERIM / "aqueduct_future_conus.geojsonl"
+    if not out.exists():
+        subprocess.run(["ogr2ogr", "-f", "GeoJSONSeq", str(out), str(gdb), "future_annual",
+                        "-clipdst", "-125", "24", "-66", "50",
+                        "-select", "bau50_ws_x_r,bau50_ws_x_s,pfaf_id",
+                        "-nlt", "PROMOTE_TO_MULTI"], check=True, capture_output=True)
+    rows = []
+    with open(out) as fh:
+        for line in fh:
+            try:
+                f = json.loads(line)
+                g = _shape(f["geometry"]).buffer(0).simplify(0.004, preserve_topology=True)
+            except Exception:
+                continue
+            p = f.get("properties") or {}
+            v = pd.to_numeric(p.get("bau50_ws_x_s"), errors="coerce")
+            if g.is_empty or pd.isna(v) or v < 0:
+                continue
+            rows.append({"wkt": g.wkt, "ws_2050": float(v)})
+    df = pd.DataFrame(rows)
+    print(f"    basins with 2050 projection: {len(df):,}")
+    return df
+
+
+# ---------------------------------------------------------------------------
+# CLIMATE PROJECTIONS
+# ---------------------------------------------------------------------------
+
+@fetcher("climate_future")
+def fetch_climate_future() -> pd.DataFrame:
+    """NOAA/USGS CMRA county projections (LOCA-downscaled), mid-century.
+
+    Cooling today is scored on 1991-2020 normals. This carries the forward
+    view: projected cooling degree days and days above 95F for 2036-2065 under
+    RCP4.5 (a middle scenario, not the worst case). A 30-year asset should be
+    screened against the climate it will actually operate in.
+    """
+    BASE = ("https://services3.arcgis.com/0Fs3HcaFfvzXvm7w/arcgis/rest/services/"
+            "Climate_Mapping_Resilience_and_Adaptation_(CMRA)_Climate_and_Coastal_"
+            "Inundation_Projections/FeatureServer/0")
+    fields = ["GEOID", "HISTORIC_MEAN_CDD", "RCP45MID_MEAN_CDD", "RCP85MID_MEAN_CDD",
+              "HISTORIC_MEAN_TMAX95F", "RCP45MID_MEAN_TMAX95F", "RCP45MID_MEAN_TMAX100F"]
+    rows = []
+    for f in _arcgis_paged(BASE, out_fields=",".join(fields), geometry=False, page=1000):
+        rows.append(f.get("properties") or {})
+    df = pd.DataFrame(rows)
+    for c in fields[1:]:
+        df[c] = pd.to_numeric(df.get(c), errors="coerce")
+    df["join_key"] = df["GEOID"].astype(str).str.zfill(5)
+    df = df.rename(columns={"RCP45MID_MEAN_CDD": "cdd_2050", "RCP45MID_MEAN_TMAX95F": "days95_2050",
+                            "HISTORIC_MEAN_CDD": "cdd_hist", "RCP45MID_MEAN_TMAX100F": "days100_2050",
+                            "RCP85MID_MEAN_CDD": "cdd_2050_rcp85"})
+    df["cdd_change"] = df["cdd_2050"] - df["cdd_hist"]
+    print(f"    counties: {len(df):,} | median CDD {df.cdd_hist.median():.0f} -> "
+          f"{df.cdd_2050.median():.0f} by mid-century (RCP4.5)")
+    return df[["join_key", "cdd_2050", "cdd_2050_rcp85", "cdd_hist", "cdd_change",
+               "days95_2050", "days100_2050"]]
+
+
+# ---------------------------------------------------------------------------
+# LAND COST
+# ---------------------------------------------------------------------------
+
+FHFA_LAND_URL = "https://www.fhfa.gov/document/land-prices_2024_20_june.xlsx"
+
+
+@fetcher("land_cost")
+def fetch_land_cost() -> pd.DataFrame:
+    """FHFA land price per acre by county (Davis, Larson, Oliner & Shui).
+
+    Caveat worth stating: these are appraisal-based values for single-family
+    residential land. A campus buys industrial or agricultural acreage, which
+    is usually far cheaper per acre. It is used as a RELATIVE signal -- where
+    land is expensive for housing it is expensive for everything -- not as a
+    price estimate.
+    """
+    RAW.mkdir(parents=True, exist_ok=True)
+    cache = RAW / "fhfa_land_2024.xlsx"
+    if not cache.exists():
+        req = urllib.request.Request(FHFA_LAND_URL, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=600) as r:
+            cache.write_bytes(r.read())
+    d = pd.read_excel(cache, sheet_name="Cross-Section Counties ", header=1, engine="openpyxl")
+    val = next(c for c in d.columns if "Per Acre" in str(c))
+    out = pd.DataFrame({"join_key": pd.to_numeric(d["FIPS"], errors="coerce"),
+                        "land_usd_acre": pd.to_numeric(d[val], errors="coerce")}).dropna()
+    out["join_key"] = out["join_key"].astype(int).astype(str).str.zfill(5)
+    print(f"    counties: {len(out):,} | median ${out.land_usd_acre.median():,.0f}/acre "
+          f"(residential basis)")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# FIBER -- open proxies for long-haul routes
+# ---------------------------------------------------------------------------
+
+@fetcher("cable_landings")
+def fetch_cable_landings() -> pd.DataFrame:
+    """Submarine cable landing stations (TeleGeography's open map data).
+
+    Matters for a specific class of site -- international connectivity,
+    Virginia Beach, Jacksonville, Oregon coast -- rather than generally.
+    """
+    d = _get_json("https://www.submarinecablemap.com/api/v3/landing-point/landing-point-geo.json")
+    rows = []
+    for f in d.get("features", []):
+        c = (f.get("geometry") or {}).get("coordinates") or []
+        if len(c) >= 2:
+            rows.append({"lat": c[1], "lng": c[0], "name": (f.get("properties") or {}).get("name")})
+    df = pd.DataFrame(rows)
+    df = df[df.lat.between(24, 50) & df.lng.between(-125, -66)].reset_index(drop=True)
+    print(f"    CONUS landing stations: {len(df)}")
+    return df
+
+
+CLASS_I = ["BNSF", "UP", "CSXT", "NS", "CN", "CPKC", "CPRS", "KCS", "CP"]
+
+
+@fetcher("rail_corridors")
+def fetch_rail_corridors() -> pd.DataFrame:
+    """Class I railroad main lines (NTAD North American Rail Network).
+
+    The best open proxy for long-haul fiber. Durairajan et al.'s InterTubes
+    study found US long-haul fiber runs overwhelmingly inside rail and highway
+    rights-of-way. Filtered server-side to Class I owners so this is ~a fifth of
+    the 302k-segment network rather than all of it.
+    """
+    BASE = ("https://services.arcgis.com/xOi1kZaI0eWDREZv/arcgis/rest/services/"
+            "NTAD_North_American_Rail_Network_Lines/FeatureServer/0")
+    owners = ",".join(f"'{o}'" for o in CLASS_I)
+    where = f"RROWNER1 IN ({owners}) AND COUNTRY='US'"
+    rows = []
+    for f in _arcgis_paged(BASE, out_fields="RROWNER1", where=where, page=2000):
+        for lng, lat in _line_vertices(f.get("geometry"), densify_km=5.0):
+            rows.append({"lat": lat, "lng": lng})
+    df = pd.DataFrame(rows).drop_duplicates()
+    df = df[df.lat.between(24, 50) & df.lng.between(-125, -66)].reset_index(drop=True)
+    print(f"    Class I rail points: {len(df):,}")
+    return df
+
+
+
+# ---------------------------------------------------------------------------
+# NODAL WHOLESALE PRICE + CONGESTION
+# ---------------------------------------------------------------------------
+
+CAISO_CONTOUR = ("https://wwwmobile.caiso.com/Web.Service.Chart/api/v3/"
+                 "ChartService/PriceContourMap1")
+
+
+def _sample_dates(n_per_month: int = 2, months: int = 12) -> list:
+    """Spread sample days across the last year: the 5th and 20th of each month.
+
+    Seasonal coverage matters more than volume -- summer congestion patterns
+    look nothing like spring ones, and a single month would bake that in.
+    """
+    import datetime as _dt
+    today = _dt.date.today().replace(day=1)
+    out = []
+    for k in range(1, months + 1):
+        y, m = today.year, today.month - k
+        while m <= 0:
+            m += 12
+            y -= 1
+        for d in (5, 20)[:n_per_month]:
+            out.append(_dt.date(y, m, d).isoformat())
+    return sorted(out)
+
+
+@fetcher("nodal_lmp")
+def fetch_nodal_lmp() -> pd.DataFrame:
+    """Average day-ahead LMP and its components at every CAISO / WEIM node.
+
+    Genuinely nodal, which is the point: basis spread inside a single state
+    routinely exceeds the difference between states, so a state or utility
+    average hides exactly the signal a siting analyst wants.
+
+    Two sources joined on node name:
+      coordinates  CAISO's public price-contour map feed (~14,800 nodes). The
+                   ISO's own map has to plot nodes somewhere; its data products
+                   do not publish locations at all.
+      prices       Historical day-ahead hourly LMP for ALL nodes via gridstatus
+                   (CAISO OASIS), sampled on 24 days across the past year.
+
+    Coverage: CAISO plus the Western Energy Imbalance Market footprint, i.e.
+    much of the West. Other ISOs need a node-coordinate source (see
+    RECOMMENDATIONS.md); until then the factor drops out there.
+
+    Emits per node:
+      lmp_mean         average day-ahead LMP, $/MWh
+      congestion_mean  average congestion component, $/MWh. SIGNED: negative
+                       means an export-constrained pocket (surplus generation),
+                       which is GOOD for new load -- load there relieves the
+                       constraint and buys cheap power.
+    """
+    import warnings
+    warnings.filterwarnings("ignore")
+    import gridstatus
+
+    req = urllib.request.Request(CAISO_CONTOUR, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        contour = json.load(r)
+    pts = {}
+    for layer in contour.get("l", []):
+        for m in layer.get("m", []):
+            c = m.get("c") or []
+            if m.get("t") == "Node" and len(c) == 2 and m.get("n"):
+                pts[m["n"]] = (float(c[0]), float(c[1]), m.get("p"), m.get("a"))
+    print(f"    contour feed: {len(pts):,} nodes with coordinates")
+
+    cache = RAW / "caiso_dam_node_means.parquet"
+    acc = None
+    if cache.exists():
+        acc = pd.read_parquet(cache)
+        print(f"    cached price sample: {acc['n_days'].max()} days")
+    else:
+        iso = gridstatus.CAISO()
+        parts = []
+        for d in _sample_dates():
+            try:
+                df = iso.get_lmp(date=d, market="DAY_AHEAD_HOURLY", locations="ALL")
+                g = df.groupby("Location")[["LMP", "Congestion"]].mean()
+                g["day"] = d
+                parts.append(g.reset_index())
+                print(f"    {d}: {len(g):,} nodes")
+            except Exception as e:  # noqa: BLE001
+                print(f"    {d}: failed {type(e).__name__}")
+            time.sleep(2)             # OASIS asks for spacing between requests
+        allp = pd.concat(parts, ignore_index=True)
+        acc = allp.groupby("Location").agg(
+            lmp_mean=("LMP", "mean"), congestion_mean=("Congestion", "mean"),
+            n_days=("day", "nunique")).reset_index()
+        acc.to_parquet(cache, index=False)
+
+    rows = []
+    for r in acc.itertuples(index=False):
+        p = pts.get(r.Location)
+        if p is None:
+            continue
+        lat, lng, ptype, area = p
+        rows.append({"lat": lat, "lng": lng, "node": r.Location, "node_type": ptype,
+                     "area": area, "lmp_mean": round(r.lmp_mean, 3),
+                     "congestion_mean": round(r.congestion_mean, 3),
+                     "n_days": int(r.n_days)})
+    out = pd.DataFrame(rows)
+    out = out[out.lat.between(24, 50) & out.lng.between(-125, -66)].reset_index(drop=True)
+    print(f"    nodes with price AND location: {len(out):,} | LMP "
+          f"p5 ${out.lmp_mean.quantile(.05):.1f} p95 ${out.lmp_mean.quantile(.95):.1f} "
+          f"| congestion p5 {out.congestion_mean.quantile(.05):+.1f} "
+          f"p95 {out.congestion_mean.quantile(.95):+.1f}")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # NETWORK
 # ---------------------------------------------------------------------------
@@ -1457,7 +2171,15 @@ def fetch_existing_datacenters() -> pd.DataFrame:
 NATIONAL_MIN_CELLS = 150
 
 
+# Layers that are regional BY NATURE -- cable landings are coastal, CAISO nodes
+# are western -- declare it here instead of tripping the national-coverage
+# guard, which exists to catch sources that are regional BY MISTAKE.
+REGIONAL_BY_DESIGN = {"cable_landings", "nodal_lmp"}
+
+
 def _check_coverage(lid: str, df: pd.DataFrame) -> None:
+    if lid in REGIONAL_BY_DESIGN:
+        return
     if df is None or df.empty or not {"lat", "lng"}.issubset(df.columns):
         if df is not None and "wkt" in getattr(df, "columns", []):
             print(f"    coverage: {len(df)} polygons (extent checked at join time)")
@@ -1478,7 +2200,9 @@ def audit_registry() -> list[str]:
     nothing failed -- the pipeline had simply stopped being reproducible.
     """
     reg = yaml.safe_load((ROOT / "sources" / "registry.yml").read_text())
-    need = {l["id"] for l in reg["layers"] if l.get("scoring")}
+    # Layers with data_from reuse another layer's fetch and need no fetcher.
+    need = {l["id"] for l in reg["layers"]
+            if l.get("scoring") and not l.get("data_from")}
     return sorted(need - set(FETCHERS))
 
 

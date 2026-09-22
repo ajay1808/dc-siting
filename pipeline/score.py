@@ -239,6 +239,15 @@ def _unused_exact_polygon_join(geoms, vals, grid):
     return out
 
 
+def _transform(vals, how):
+    """Optional pre-normalisation transform. log1p for quantities spanning
+    several orders of magnitude (queued MW runs from 0 to tens of GW per
+    county), where a linear scale would crush everything but the top decile."""
+    if how == "log1p":
+        return np.log1p(np.clip(vals, 0, None))
+    return vals
+
+
 def _normalize(vals, clamp, invert):
     """Scale to 0..1 across an explicit clamp range.
 
@@ -283,7 +292,9 @@ def compute_layer_subscore(layer, cells_xy, grid):
         print(f"      (raster sample covered {np.isfinite(vals).mean():.1%} of cells)")
         return _normalize(vals, spec.get("clamp"), method == "normalize_invert")
 
-    src = INTERIM / f"{lid}.parquet"
+    # A layer may read another layer's data (the ISO queue yields both a supply
+    # signal and a friction signal from one fetch).
+    src = INTERIM / f"{layer.get('data_from', lid)}.parquet"
     if not spec or not src.exists():
         return None
     df = pd.read_parquet(src)
@@ -306,6 +317,7 @@ def compute_layer_subscore(layer, cells_xy, grid):
             return None
         lut = df.dropna(subset=["join_key"]).set_index("join_key")[vf]
         vals = grid[col].map(lut).to_numpy(dtype=float)
+        vals = _transform(vals, spec.get("transform"))
         method = spec.get("method", "normalize")
         if method == "ratio_normalize":
             return np.clip(vals, 0, 1)
@@ -377,6 +389,15 @@ def compute_layer_subscore(layer, cells_xy, grid):
         if not ok.any():
             return None
         interp = idw(cells_xy, feat_xy[ok], vals[ok], k=spec.get("k", 6))
+        # Regional point sets (CAISO/WEIM nodes cover only the West) must not
+        # be extrapolated across the country: IDW always returns a value, so
+        # without a cutoff every East Coast cell would inherit California
+        # prices. Beyond max_km from the nearest point the layer is absent.
+        mk = spec.get("max_km")
+        if mk:
+            d, _ = cKDTree(feat_xy[ok]).query(cells_xy, k=1)
+            interp = np.where(d <= mk * 1000, interp, np.nan)
+            print(f"      (idw within {mk} km covers {np.isfinite(interp).mean():.1%} of cells)")
         return _normalize(interp, spec.get("clamp"), method == "idw_invert")
 
     if method == "count_within_radius":
@@ -404,8 +425,17 @@ def main() -> int:
         print(f"  [layer] {layer['id']:<24} mean={np.nanmean(s):.3f} "
               f"max={np.nanmax(s):.3f} coverage={cov:6.1%}")
 
+    def _first(a):
+        """Take the first input that has a value, in declared order -- i.e. a
+        preferred source with a fallback, not an average of the two."""
+        out = np.full(a.shape[1], np.nan)
+        for row in a:
+            out = np.where(np.isfinite(out), out, row)
+        return out
+
     combine_fn = {"max": np.fmax.reduce, "mean": lambda a: np.nanmean(a, axis=0),
-                  "min": np.fmin.reduce, "product": lambda a: np.nanprod(a, axis=0)}
+                  "min": np.fmin.reduce, "product": lambda a: np.nanprod(a, axis=0),
+                  "first": _first}
 
     factor_vals, weights = {}, {}
     for fid, f in cfg["factors"].items():

@@ -12,9 +12,9 @@ suitability, and explains *why* each cell scored what it did.
 |---|---|
 | Grid | H3 resolution 7 — **1,467,441 CONUS cells** (~5.16 km² each) |
 | Layers declared | 29 (all V1 = easy + medium tier) |
-| Layers ingested | 26 |
-| Factors live | **18 of 18** |
-| Tile payload | 74.4 MB across 3 archives, largest 49 MB |
+| Layers ingested | 38 |
+| Factors live | **25 of 25** |
+| Tile payload | 81.5 MB across 3 archives, largest 53 MB |
 
 Scores are labelled PROVISIONAL until cooling, water, land and policy land.
 The three heaviest factors (grid access, interconnection headroom, power
@@ -85,7 +85,7 @@ Two deliberate modelling choices:
 See [docs/ACCOUNTS.md](docs/ACCOUNTS.md) — five free API keys, ~15 minutes.
 
 ```bash
-python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
+python3.11 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 brew install gdal tippecanoe duckdb pmtiles
 cp .env.example .env    # then fill in keys
 make check              # validate every source endpoint
